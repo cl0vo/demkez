@@ -15,8 +15,9 @@ export function createSyntheticContext(update) {
   const actions = [];
   const message = update.message ?? null;
   const callbackQuery = update.callback_query ?? null;
-  const chat = message?.chat ?? callbackQuery?.message?.chat ?? null;
-  const from = message?.from ?? callbackQuery?.from ?? null;
+  const preCheckoutQuery = update.pre_checkout_query ?? null;
+  const chat = message?.chat ?? callbackQuery?.message?.chat ?? preCheckoutQuery?.from ?? null;
+  const from = message?.from ?? callbackQuery?.from ?? preCheckoutQuery?.from ?? null;
 
   const ctx = {
     api: {
@@ -32,6 +33,13 @@ export function createSyntheticContext(update) {
       actions.push({
         options,
         type: "answer_callback_query",
+      });
+    },
+    async answerPreCheckoutQuery(ok, other = {}) {
+      actions.push({
+        ok,
+        options: typeof other === "string" ? { error_message: other } : other,
+        type: "answer_pre_checkout_query",
       });
     },
     async editMessageText(text, options = {}) {
@@ -69,10 +77,30 @@ export function createSyntheticContext(update) {
         message_id: 3000 + actions.length,
       };
     },
+    async replyWithInvoice(title, description, payload, currency, prices, options = {}) {
+      actions.push({
+        currency,
+        description,
+        options,
+        payload,
+        prices,
+        title,
+        type: "reply_with_invoice",
+      });
+
+      return {
+        invoice: {
+          currency,
+          payload,
+        },
+        message_id: 4000 + actions.length,
+      };
+    },
     callbackQuery,
     chat,
     from,
     message,
+    preCheckoutQuery,
     async reply(text, options = {}) {
       actions.push({
         options,
@@ -104,6 +132,26 @@ async function routeSyntheticUpdate(update, ctx, handlers) {
     return "command:my";
   }
 
+  if (update.message?.text === "/balance") {
+    await handlers.handleBalance(ctx);
+    return "command:balance";
+  }
+
+  if (update.message?.text === "/paysupport") {
+    await handlers.handlePaySupport(ctx);
+    return "command:paysupport";
+  }
+
+  if (update.message?.successful_payment) {
+    await handlers.handleSuccessfulPayment(ctx);
+    return "message:successful_payment";
+  }
+
+  if (update.pre_checkout_query) {
+    await handlers.handlePreCheckout(ctx);
+    return "pre_checkout_query";
+  }
+
   if (typeof update.message?.text === "string") {
     await handlers.handleTextMessage(ctx);
     return "message:text";
@@ -129,6 +177,13 @@ async function routeSyntheticUpdate(update, ctx, handlers) {
       return "callback:cabtrack";
     }
 
+    const starsPayMatch = /^starspay:(.+):(\d+)$/.exec(update.callback_query.data);
+
+    if (starsPayMatch) {
+      await handlers.handleStarsAmountCallback(ctx, starsPayMatch[1], Number.parseInt(starsPayMatch[2], 10));
+      return "callback:starspay";
+    }
+
     if (update.callback_query.data === "upload:title:use") {
       await handlers.handleUseSuggestedTitle(ctx);
       return "callback:upload_title";
@@ -151,7 +206,7 @@ async function routeSyntheticUpdate(update, ctx, handlers) {
       return "callback:menu";
     }
 
-    const cabinetMatch = /^cab:(tracks|wallet|wallet:clear)$/.exec(update.callback_query.data);
+    const cabinetMatch = /^cab:(tracks|balance)$/.exec(update.callback_query.data);
 
     if (cabinetMatch) {
       await handlers.handleCabinetCallback(ctx, cabinetMatch[1]);

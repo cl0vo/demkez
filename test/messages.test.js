@@ -3,9 +3,11 @@ import assert from "node:assert/strict";
 
 import {
   formatCabinetMessage,
-  formatDonationInfoMessage,
   formatMyTracksMessage,
+  formatPaySupportMessage,
   formatSelectionMessage,
+  formatStarsBalanceMessage,
+  formatStarsSupportMessage,
   formatTrackButton,
   formatUploadTitlePrompt,
   normalizeQuery,
@@ -26,16 +28,16 @@ test("formatTrackButton keeps artist and title readable", () => {
   assert.ok(label.length <= 55);
 });
 
-test("formatSelectionMessage escapes html and keeps next action prompt", () => {
+test("formatSelectionMessage escapes html and shows stars support", () => {
   const message = formatSelectionMessage({
-    tonAddress: "UQ-demo-wallet",
+    supportsStars: true,
     title: "<Thunderstruck>",
     uploaderName: "AC/DC",
   });
 
   assert.match(message, /&lt;Thunderstruck&gt;/);
   assert.match(message, /Загрузил: AC\/DC/);
-  assert.match(message, /TON донат подключен/);
+  assert.match(message, /Поддержка: Telegram Stars/);
 });
 
 test("formatMyTracksMessage renders compact cabinet list", () => {
@@ -56,18 +58,26 @@ test("formatUploadTitlePrompt includes suggestion when available", () => {
   assert.match(message, /Похоже на: Travis Scott - FE!N/);
 });
 
-test("cabinet and donation messages show split details", () => {
+test("cabinet and stars messages show split details", () => {
   const cabinet = formatCabinetMessage(
-    { hasTonAddress: true, tonAddress: "UQ-demo", trackCount: 3 },
-    { feeBps: 300, feePercentLabel: "3%", platformTonAddress: "UQ-platform" },
+    { starsAvailableXtr: 12, starsFrozenXtr: 3, starsPendingXtr: 5, trackCount: 3 },
+    { feeBps: 300, feePercentLabel: "3%", starsHoldDays: 7 },
   );
-  const donation = formatDonationInfoMessage(
-    { title: "My Demo", tonAddress: "UQ-demo" },
-    { feeBps: 300, feePercentLabel: "3%", platformTonAddress: "UQ-platform" },
+  const balance = formatStarsBalanceMessage(
+    { starsAvailableXtr: 12, starsFrozenXtr: 3, starsPendingXtr: 5 },
+    { feeBps: 300, feePercentLabel: "3%", starsHoldDays: 7 },
+  );
+  const support = formatStarsSupportMessage(
+    { title: "My Demo" },
+    { feeBps: 300, feePercentLabel: "3%", starsHoldDays: 7 },
   );
 
   assert.match(cabinet, /Сплит: 97% автору \/ 3% сервису/);
-  assert.match(cabinet, /UQ-demo/);
-  assert.match(donation, /Автору: 97%/);
-  assert.match(donation, /Кошелек сервиса/);
+  assert.match(cabinet, /В ожидании: 5 XTR/);
+  assert.match(balance, /Доступно: 12 XTR/);
+  assert.match(support, /Оплата проходит через Telegram Stars/);
+});
+
+test("pay support message prefers configured handle", () => {
+  assert.equal(formatPaySupportMessage({ paySupportHandle: "@demkez_support" }), "По оплате напиши @demkez_support");
 });

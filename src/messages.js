@@ -8,18 +8,17 @@ export const LOOKUP_ERROR_PROMPT = "Не получилось отправить
 export const NON_TEXT_PROMPT = "Нужен текст или mp3";
 export const SEARCH_ERROR_PROMPT = "Поиск не сработал. Попробуй ещё раз.";
 export const UPLOAD_TITLE_PROMPT = "Как назвать трек?\nНапример: Travis Scott - FE!N";
-export const UPLOAD_DONATION_PROMPT = "Ссылка на донат или -";
 export const UPLOAD_DONE_PROMPT = "Сохранено. Теперь трек можно найти.";
-export const UPLOAD_LINK_ERROR_PROMPT = "Нужна ссылка или -";
 export const UPLOAD_ONLY_MP3_PROMPT = "Пришли mp3 файлом или аудио";
 export const SENT_TRACK_PROMPT = "Отправлено. Ищи следующий трек";
 export const MY_TRACKS_EMPTY_PROMPT = "У тебя пока нет треков";
-export const TITLE_SUGGESTION_SAVED_PROMPT = "Название сохранено. Теперь ссылка на донат или -";
-export const TON_WALLET_PROMPT = "Пришли TON address или -";
-export const TON_WALLET_SAVED_PROMPT = "TON донат подключен";
-export const TON_WALLET_DISABLED_PROMPT = "TON донат отключен";
-export const TON_WALLET_INVALID_PROMPT = "Это не похоже на TON address";
-export const DONATION_INFO_UNAVAILABLE_PROMPT = "У автора пока нет TON-доната";
+export const TITLE_SUGGESTION_SAVED_PROMPT = "Название сохранено. Трек опубликован.";
+export const STARS_BALANCE_PROMPT = "Stars баланс";
+export const STARS_SUPPORT_PROMPT = "Выбери сумму поддержки";
+export const STARS_SUPPORT_UNAVAILABLE_PROMPT = "Поддержка в Stars сейчас недоступна.";
+export const STARS_INVOICE_EXPIRED_PROMPT = "Счёт устарел. Нажми поддержку ещё раз.";
+export const STARS_PAYMENT_SUCCESS_PROMPT = "Спасибо. Поддержка в Stars отправлена.";
+export const PAY_SUPPORT_PROMPT = "По оплате напиши в поддержку.";
 export const SEARCH_BUTTON_TEXT = "Поиск";
 export const UPLOAD_BUTTON_TEXT = "Загрузить MP3";
 export const CABINET_BUTTON_TEXT = "Кабинет";
@@ -58,10 +57,8 @@ export function formatSelectionMessage(track) {
     lines.push(`Загрузил: ${escapeHtml(track.uploaderName)}`);
   }
 
-  if (track.tonAddress) {
-    lines.push("TON донат подключен");
-  } else if (track.donationUrl) {
-    lines.push(`<a href="${escapeAttribute(track.donationUrl)}">Поддержать автора</a>`);
+  if (track.supportsStars) {
+    lines.push("Поддержка: Telegram Stars");
   }
 
   lines.push("");
@@ -75,10 +72,6 @@ export function formatTrackCaption(track) {
 
   if (track.uploaderName) {
     lines.push(`Загрузил: ${track.uploaderName}`);
-  }
-
-  if (track.donationUrl) {
-    lines.push(`Поддержать: ${track.donationUrl}`);
   }
 
   return lines.join("\n");
@@ -102,42 +95,51 @@ export function formatCabinetMessage(profile, platformSettings) {
   const lines = [
     "demkez кабинет",
     `Треков: ${profile.trackCount}`,
-    `TON донат: ${profile.hasTonAddress ? "подключен" : "не подключен"}`,
+    `Донаты: Telegram Stars`,
+    `В ожидании: ${profile.starsPendingXtr} XTR`,
+    `Доступно: ${profile.starsAvailableXtr} XTR`,
+    `Заморожено: ${profile.starsFrozenXtr} XTR`,
     `Сплит: ${100 - platformSettings.feeBps / 100}% автору / ${platformSettings.feePercentLabel} сервису`,
     "Поиск работает просто текстом",
     "Загрузка: пришли mp3",
   ];
 
-  if (profile.tonAddress) {
-    lines.push(`TON: <code>${escapeHtml(profile.tonAddress)}</code>`);
-  }
-
-  if (!platformSettings.platformTonAddress) {
-    lines.push("Кошелек сервиса еще не задан");
-  }
+  lines.push(`Холд выплат: ${platformSettings.starsHoldDays} дн.`);
 
   return lines.join("\n");
 }
 
-export function formatDonationInfoMessage(track, platformSettings) {
+export function formatStarsBalanceMessage(profile, platformSettings) {
   const lines = [
-    `TON донат для <b>${escapeHtml(track.title)}</b>`,
-    `Автору: 97%`,
+    "Stars баланс",
+    `В ожидании: ${profile.starsPendingXtr} XTR`,
+    `Доступно: ${profile.starsAvailableXtr} XTR`,
+    `Заморожено: ${profile.starsFrozenXtr} XTR`,
+    "",
+    `Автору: ${100 - platformSettings.feeBps / 100}%`,
     `Сервису: ${platformSettings.feePercentLabel}`,
+    `Холд: ${platformSettings.starsHoldDays} дн.`,
   ];
 
-  if (track.tonAddress) {
-    lines.push(`Кошелек автора: <code>${escapeHtml(track.tonAddress)}</code>`);
-  }
-
-  if (platformSettings.platformTonAddress) {
-    lines.push(`Кошелек сервиса: <code>${escapeHtml(platformSettings.platformTonAddress)}</code>`);
-  }
-
-  lines.push("");
-  lines.push("Для автосплита 97/3 нужен Mini App с TON Connect");
-
   return lines.join("\n");
+}
+
+export function formatStarsSupportMessage(track, platformSettings) {
+  return [
+    `Поддержать <b>${escapeHtml(track.title)}</b>`,
+    `Автору: ${100 - platformSettings.feeBps / 100}%`,
+    `Сервису: ${platformSettings.feePercentLabel}`,
+    "",
+    "Оплата проходит через Telegram Stars.",
+  ].join("\n");
+}
+
+export function formatPaySupportMessage(platformSettings) {
+  if (platformSettings.paySupportHandle) {
+    return `По оплате напиши ${platformSettings.paySupportHandle}`;
+  }
+
+  return PAY_SUPPORT_PROMPT;
 }
 
 export function formatCabinetTracksPreview(tracks) {
@@ -160,8 +162,4 @@ function escapeHtml(value) {
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;");
-}
-
-function escapeAttribute(value) {
-  return value.replaceAll('"', "&quot;");
 }

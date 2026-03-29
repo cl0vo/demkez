@@ -45,7 +45,7 @@ test("replay fixtures stay green", async () => {
 });
 
 function createFixtureDeps(fixture) {
-  const state = structuredClone(fixture.state ?? { tracks: [], users: {} });
+  const state = structuredClone(fixture.state ?? { supportIntents: [], supportPayments: [], tracks: [], users: {} });
 
   return {
     logger: {
@@ -63,11 +63,7 @@ function createFixtureDeps(fixture) {
       async clearPendingUpload() {
         return false;
       },
-      async clearUserTonAddress(userId) {
-        delete state.users[String(userId)]?.tonAddress;
-        return true;
-      },
-      async finalizePendingUpload(userId, donationUrl) {
+      async finalizePendingUpload(userId) {
         const pending = state.users[String(userId)]?.pendingUpload;
 
         if (!pending?.title) {
@@ -75,10 +71,10 @@ function createFixtureDeps(fixture) {
         }
 
         const savedTrack = {
-          donationUrl,
           fileId: pending.fileId,
           fileType: pending.fileType,
           id: `fixture-track-${state.tracks.length + 1}`,
+          supportsStars: true,
           title: pending.title,
           uploaderName: pending.uploaderName,
           uploaderUserId: Number(userId),
@@ -96,13 +92,11 @@ function createFixtureDeps(fixture) {
         return state.users[String(userId)]?.pendingUpload ?? null;
       },
       async getUserProfile(userId) {
-        const user = state.users[String(userId)] ?? {};
-        const tonAddress = typeof user.tonAddress === "string" && /^(?:EQ|UQ|kQ|0Q)[A-Za-z0-9+/_-]{46}$|^-?\d+:[a-fA-F0-9]{64}$/.test(user.tonAddress)
-          ? user.tonAddress
-          : "";
         return {
-          hasTonAddress: Boolean(tonAddress),
-          tonAddress,
+          isBanned: false,
+          starsAvailableXtr: 0,
+          starsFrozenXtr: 0,
+          starsPendingXtr: 0,
           trackCount: state.tracks.filter((track) => track.uploaderUserId === Number(userId)).length,
         };
       },
@@ -123,16 +117,13 @@ function createFixtureDeps(fixture) {
         state.users[String(userId)].pendingAction = action;
         return action;
       },
-      async setUserTonAddress(userId, tonAddress) {
-        state.users[String(userId)] ??= {};
-        state.users[String(userId)].tonAddress = tonAddress;
-        return tonAddress;
-      },
     },
     platformSettings: {
       feeBps: 300,
       feePercentLabel: "3%",
-      platformTonAddress: "UQ-platform",
+      paySupportHandle: "@demkez_support",
+      starsHoldDays: 7,
+      starsSupportAmounts: [50, 100, 250],
     },
     replayStore: {
       async capture() {

@@ -1,29 +1,30 @@
 import { InlineKeyboard } from "grammy";
 
 import {
-  DONATION_INFO_UNAVAILABLE_PROMPT,
   EMPTY_QUERY_PROMPT,
   EMPTY_RESULTS_PROMPT,
   LOOKUP_ERROR_PROMPT,
   MY_TRACKS_EMPTY_PROMPT,
   NON_TEXT_PROMPT,
+  PAY_SUPPORT_PROMPT,
   SEARCH_ERROR_PROMPT,
   SEARCH_RESULTS_PROMPT,
   SENT_TRACK_PROMPT,
   START_PROMPT,
+  STARS_BALANCE_PROMPT,
+  STARS_INVOICE_EXPIRED_PROMPT,
+  STARS_PAYMENT_SUCCESS_PROMPT,
+  STARS_SUPPORT_PROMPT,
+  STARS_SUPPORT_UNAVAILABLE_PROMPT,
   TITLE_SUGGESTION_SAVED_PROMPT,
-  TON_WALLET_DISABLED_PROMPT,
-  TON_WALLET_INVALID_PROMPT,
-  TON_WALLET_PROMPT,
-  TON_WALLET_SAVED_PROMPT,
-  UPLOAD_DONATION_PROMPT,
   UPLOAD_DONE_PROMPT,
-  UPLOAD_LINK_ERROR_PROMPT,
   UPLOAD_ONLY_MP3_PROMPT,
   UPLOAD_TITLE_PROMPT,
   formatCabinetMessage,
-  formatDonationInfoMessage,
+  formatPaySupportMessage,
   formatSelectionMessage,
+  formatStarsBalanceMessage,
+  formatStarsSupportMessage,
   formatTrackButton,
   formatTrackCaption,
   formatUploadTitlePrompt,
@@ -31,7 +32,6 @@ import {
 } from "./messages.js";
 import { noopLogger, serializeError } from "./logger.js";
 import { noopReplayStore } from "./replay-store.js";
-import { isValidTonAddress } from "./ton.js";
 
 const HOME_LABEL = "В меню";
 const BACK_LABEL = "Назад";
@@ -40,15 +40,13 @@ const SEARCH_NEW_LABEL = "Новый поиск";
 const UPLOAD_LABEL = "Загрузить MP3";
 const CABINET_LABEL = "Кабинет";
 const TRACKS_LABEL = "Мои треки";
-const WALLET_LABEL = "TON кошелек";
-const WALLET_DISABLE_LABEL = "Отключить TON";
-const SKIP_DONATION_LABEL = "Без доната";
+const BALANCE_LABEL = "Stars баланс";
 const CANCEL_UPLOAD_LABEL = "Отменить загрузку";
 
 export function createHandlers({
   musicService,
   logger = noopLogger,
-  platformSettings = { feeBps: 300, feePercentLabel: "3%", platformTonAddress: "" },
+  platformSettings = { feeBps: 300, feePercentLabel: "3%", starsHoldDays: 7, starsSupportAmounts: [50, 100, 250] },
   replayStore = noopReplayStore,
 }) {
   return {
@@ -69,12 +67,32 @@ export function createHandlers({
       await openCabinetReply(ctx, musicService, logger, platformSettings);
     },
 
+    async handleBalance(ctx) {
+      const meta = getContextMeta(ctx);
+      const profile = meta.userId ? await musicService.getUserProfile(meta.userId) : emptyProfile();
+
+      await logger.log("balance_requested", {
+        ...meta,
+        starsAvailableXtr: profile.starsAvailableXtr,
+      });
+
+      await ctx.reply(formatStarsBalanceMessage(profile, platformSettings), {
+        reply_markup: createBalanceKeyboard(),
+      });
+    },
+
+    async handlePaySupport(ctx) {
+      await ctx.reply(formatPaySupportMessage(platformSettings), {
+        reply_markup: createInfoKeyboard(),
+      });
+    },
+
     async handleTextMessage(ctx) {
       const meta = getContextMeta(ctx);
       const rawText = ctx.message?.text ?? "";
 
       if (rawText.startsWith("/")) {
-        if (isStartCommandText(rawText) || isMyCommandText(rawText)) {
+        if (isStartCommandText(rawText) || isMyCommandText(rawText) || isBalanceCommandText(rawText) || isPaySupportCommandText(rawText)) {
           return;
         }
 
@@ -92,13 +110,6 @@ export function createHandlers({
 
       if (pendingUpload) {
         await handlePendingUploadText(ctx, meta, rawText, pendingUpload, musicService, logger);
-        return;
-      }
-
-      const pendingAction = meta.userId ? await musicService.getPendingAction(meta.userId) : null;
-
-      if (pendingAction?.type === "set_ton_wallet") {
-        await handlePendingWalletText(ctx, meta, rawText, musicService, logger);
         return;
       }
 
@@ -203,8 +214,14 @@ export function createHandlers({
           ...meta,
           title: titleFromCaption,
         });
-        await ctx.reply(UPLOAD_DONATION_PROMPT, {
-          reply_markup: createDonationPromptKeyboard(),
+        const track = await musicService.finalizePendingUpload(meta.userId);
+        await logger.log("upload_completed", {
+          ...meta,
+          trackId: track?.id ?? null,
+          via: "caption",
+        });
+        await ctx.reply(UPLOAD_DONE_PROMPT, {
+          reply_markup: createHomeKeyboard(),
         });
         return;
       }
@@ -225,7 +242,7 @@ export function createHandlers({
       await ctx.answerCallbackQuery();
 
       try {
-        const track = await enrichTrackWithDonation(await musicService.lookupTrack(trackId), musicService);
+        const track = await enrichTrack(await musicService.lookupTrack(trackId), musicService);
 
         if (!track) {
           await logger.log("selection_missing", {
@@ -242,12 +259,12 @@ export function createHandlers({
 
         await ctx.editMessageText(formatSelectionMessage(track), {
           parse_mode: "HTML",
-          reply_markup: createSelectionKeyboard(track),
+          reply_markup: createSelectionKeyboard(track, meta.userId),
         });
 
         await logger.log("selection_completed", {
           ...meta,
-          hasTonAddress: Boolean(track.tonAddress),
+          supportsStars: Boolean(track.supportsStars),
           trackId,
         });
       } catch (error) {
@@ -284,7 +301,7 @@ export function createHandlers({
       await ctx.answerCallbackQuery();
 
       try {
-        const track = await enrichTrackWithDonation(await musicService.lookupTrack(trackId), musicService);
+        const track = await enrichTrack(await musicService.lookupTrack(trackId), musicService);
 
         if (!track) {
           await logger.log("cabinet_track_missing", {
@@ -348,30 +365,19 @@ export function createHandlers({
         via: "suggestion",
       });
 
+      const track = await musicService.finalizePendingUpload(meta.userId);
+      await logger.log("upload_completed", {
+        ...meta,
+        trackId: track?.id ?? null,
+        via: "suggestion",
+      });
       await ctx.editMessageText(TITLE_SUGGESTION_SAVED_PROMPT, {
-        reply_markup: createDonationPromptKeyboard(),
+        reply_markup: createHomeKeyboard(),
       });
     },
 
     async handleSkipDonation(ctx) {
-      const meta = getContextMeta(ctx);
-      const track = await musicService.finalizePendingUpload(meta.userId, null);
-
       await ctx.answerCallbackQuery();
-
-      if (!track) {
-        await ctx.editMessageText(UPLOAD_DONATION_PROMPT, {
-          reply_markup: createDonationPromptKeyboard(),
-        });
-        return;
-      }
-
-      await logger.log("upload_completed", {
-        ...meta,
-        trackId: track.id,
-        via: "skip_donation",
-      });
-
       await ctx.editMessageText(UPLOAD_DONE_PROMPT, {
         reply_markup: createHomeKeyboard(),
       });
@@ -436,48 +442,135 @@ export function createHandlers({
         return;
       }
 
-      if (action === "wallet") {
-        await musicService.setPendingAction(meta.userId, { type: "set_ton_wallet" });
-
-        await ctx.editMessageText(TON_WALLET_PROMPT, {
-          reply_markup: createWalletPromptKeyboard(profile),
+      if (action === "balance") {
+        await ctx.editMessageText(formatStarsBalanceMessage(profile, platformSettings), {
+          reply_markup: createBalanceKeyboard(),
         });
         return;
-      }
-
-      if (action === "wallet:clear") {
-        await musicService.clearUserTonAddress(meta.userId);
-        await musicService.clearPendingAction(meta.userId);
-
-        const refreshedProfile = await musicService.getUserProfile(meta.userId);
-        await logger.log("ton_wallet_cleared", meta);
-        await ctx.editMessageText(`${TON_WALLET_DISABLED_PROMPT}\n\n${formatCabinetMessage(refreshedProfile, platformSettings)}`, {
-          parse_mode: "HTML",
-          reply_markup: createCabinetKeyboard(),
-        });
       }
     },
 
     async handleDonateCallback(ctx, trackId) {
       const meta = getContextMeta(ctx);
-      const track = await enrichTrackWithDonation(await musicService.lookupTrack(trackId), musicService);
+      const track = await enrichTrack(await musicService.lookupTrack(trackId), musicService);
 
       await ctx.answerCallbackQuery();
 
-      if (!track?.tonAddress) {
-        await ctx.reply(DONATION_INFO_UNAVAILABLE_PROMPT, {
+      if (!track?.supportsStars || track.uploaderUserId === meta.userId) {
+        await ctx.reply(STARS_SUPPORT_UNAVAILABLE_PROMPT, {
           reply_markup: createInfoKeyboard(),
         });
         return;
       }
 
-      await logger.log("donation_info_opened", {
+      await logger.log("stars_support_opened", {
         ...meta,
-        hasTonAddress: true,
         trackId,
       });
-      await ctx.reply(formatDonationInfoMessage(track, platformSettings), {
+      await ctx.reply(formatStarsSupportMessage(track, platformSettings), {
         parse_mode: "HTML",
+        reply_markup: createStarsAmountKeyboard(trackId, platformSettings.starsSupportAmounts),
+      });
+    },
+
+    async handleStarsAmountCallback(ctx, trackId, amountXtr) {
+      const meta = getContextMeta(ctx);
+      const track = await enrichTrack(await musicService.lookupTrack(trackId), musicService);
+
+      await ctx.answerCallbackQuery();
+
+      if (!track?.supportsStars || track.uploaderUserId === meta.userId) {
+        await ctx.reply(STARS_SUPPORT_UNAVAILABLE_PROMPT, {
+          reply_markup: createInfoKeyboard(),
+        });
+        return;
+      }
+
+      const intent = await musicService.createStarsSupportIntent({
+        amountXtr,
+        donorUserId: meta.userId,
+        trackId,
+      });
+
+      if (!intent) {
+        await ctx.reply(STARS_SUPPORT_UNAVAILABLE_PROMPT, {
+          reply_markup: createInfoKeyboard(),
+        });
+        return;
+      }
+
+      await logger.log("stars_invoice_created", {
+        ...meta,
+        amountXtr,
+        payload: intent.payload,
+        trackId,
+      });
+
+      await ctx.replyWithInvoice(
+        `Поддержать ${track.title}`,
+        `Поддержка автора ${track.uploaderName} в Telegram Stars`,
+        intent.payload,
+        "XTR",
+        [{ amount: intent.amountXtr, label: `Поддержка ${intent.amountXtr} XTR` }],
+        {
+          start_parameter: `support_${trackId.slice(0, 12)}`,
+        },
+      );
+    },
+
+    async handlePreCheckout(ctx) {
+      const meta = getContextMeta(ctx);
+      const payload = ctx.preCheckoutQuery?.invoice_payload ?? "";
+      const intent = await musicService.approveStarsSupportIntent(payload, meta.userId);
+
+      if (!intent) {
+        await logger.log("stars_precheckout_rejected", {
+          ...meta,
+          payload,
+        });
+        await ctx.answerPreCheckoutQuery(false, STARS_INVOICE_EXPIRED_PROMPT);
+        return;
+      }
+
+      await logger.log("stars_precheckout_approved", {
+        ...meta,
+        payload,
+      });
+      await ctx.answerPreCheckoutQuery(true);
+    },
+
+    async handleSuccessfulPayment(ctx) {
+      const meta = getContextMeta(ctx);
+      const payment = ctx.message?.successful_payment;
+
+      if (!payment) {
+        return;
+      }
+
+      const savedPayment = await musicService.completeStarsSupportPayment({
+        donorUserId: meta.userId,
+        payload: payment.invoice_payload,
+        providerPaymentChargeId: payment.provider_payment_charge_id,
+        telegramPaymentChargeId: payment.telegram_payment_charge_id,
+        totalAmountXtr: payment.total_amount,
+      });
+
+      if (!savedPayment) {
+        await ctx.reply(STARS_INVOICE_EXPIRED_PROMPT, {
+          reply_markup: createInfoKeyboard(),
+        });
+        return;
+      }
+
+      await logger.log("stars_payment_completed", {
+        ...meta,
+        amountXtr: savedPayment.amountXtr,
+        payload: payment.invoice_payload,
+        telegramPaymentChargeId: payment.telegram_payment_charge_id,
+        trackId: savedPayment.trackId,
+      });
+
+      await ctx.reply(STARS_PAYMENT_SUCCESS_PROMPT, {
         reply_markup: createInfoKeyboard(),
       });
     },
@@ -490,6 +583,14 @@ function isStartCommandText(text) {
 
 function isMyCommandText(text) {
   return /^\/my(?:@\w+)?(?:\s|$)/i.test(text);
+}
+
+function isBalanceCommandText(text) {
+  return /^\/balance(?:@\w+)?(?:\s|$)/i.test(text);
+}
+
+function isPaySupportCommandText(text) {
+  return /^\/paysupport(?:@\w+)?(?:\s|$)/i.test(text);
 }
 
 async function handlePendingUploadText(ctx, meta, rawText, pendingUpload, musicService, logger) {
@@ -508,76 +609,24 @@ async function handlePendingUploadText(ctx, meta, rawText, pendingUpload, musicS
       ...meta,
       title: normalized,
     });
-    await ctx.reply(UPLOAD_DONATION_PROMPT, {
-      reply_markup: createDonationPromptKeyboard(),
+    const track = await musicService.finalizePendingUpload(meta.userId);
+
+    if (!track) {
+      await ctx.reply(UPLOAD_ONLY_MP3_PROMPT, {
+        reply_markup: createUploadPromptKeyboard(),
+      });
+      return;
+    }
+
+    await logger.log("upload_completed", {
+      ...meta,
+      trackId: track.id,
     });
-    return;
-  }
-
-  const donationUrl = parseDonationUrl(normalized);
-
-  if (normalized && donationUrl === undefined) {
-    await ctx.reply(UPLOAD_LINK_ERROR_PROMPT, {
-      reply_markup: createDonationPromptKeyboard(),
-    });
-    return;
-  }
-
-  const track = await musicService.finalizePendingUpload(meta.userId, donationUrl ?? null);
-
-  if (!track) {
-    await ctx.reply(UPLOAD_ONLY_MP3_PROMPT, {
-      reply_markup: createUploadPromptKeyboard(),
-    });
-    return;
-  }
-
-  await logger.log("upload_completed", {
-    ...meta,
-    trackId: track.id,
-  });
-  await ctx.reply(UPLOAD_DONE_PROMPT, {
-    reply_markup: createHomeKeyboard(),
-  });
-}
-
-async function handlePendingWalletText(ctx, meta, rawText, musicService, logger) {
-  const normalized = normalizeQuery(rawText);
-  const profile = await musicService.getUserProfile(meta.userId);
-
-  if (!normalized) {
-    await ctx.reply(TON_WALLET_PROMPT, {
-      reply_markup: createWalletPromptKeyboard(profile),
-    });
-    return;
-  }
-
-  if (normalized === "-" || /^нет$/i.test(normalized)) {
-    await musicService.clearUserTonAddress(meta.userId);
-    await musicService.clearPendingAction(meta.userId);
-    await logger.log("ton_wallet_cleared", meta);
-    await ctx.reply(TON_WALLET_DISABLED_PROMPT, {
+    await ctx.reply(UPLOAD_DONE_PROMPT, {
       reply_markup: createHomeKeyboard(),
     });
     return;
   }
-
-  if (!isValidTonAddress(normalized)) {
-    await ctx.reply(TON_WALLET_INVALID_PROMPT, {
-      reply_markup: createWalletPromptKeyboard(profile),
-    });
-    return;
-  }
-
-  await musicService.setUserTonAddress(meta.userId, normalized);
-  await musicService.clearPendingAction(meta.userId);
-  await logger.log("ton_wallet_saved", {
-    ...meta,
-    tonAddress: normalized,
-  });
-  await ctx.reply(TON_WALLET_SAVED_PROMPT, {
-    reply_markup: createHomeKeyboard(),
-  });
 }
 
 async function resetPendingState(musicService, userId) {
@@ -617,14 +666,6 @@ function getUploaderName(ctx) {
     : [ctx.from?.first_name, ctx.from?.last_name].filter(Boolean).join(" ").trim() || "Unknown";
 }
 
-function parseDonationUrl(value) {
-  if (!value || value === "-" || /^нет$/i.test(value)) {
-    return null;
-  }
-
-  return /^https?:\/\/\S+$/i.test(value) ? value : undefined;
-}
-
 function buildSuggestedTitle(message, fileName) {
   const performer = normalizeQuery(message?.audio?.performer ?? "");
   const title = normalizeQuery(message?.audio?.title ?? "");
@@ -647,7 +688,7 @@ function buildSuggestedTitle(message, fileName) {
   return baseName || "";
 }
 
-async function enrichTrackWithDonation(track, musicService) {
+async function enrichTrack(track, musicService) {
   if (!track) {
     return null;
   }
@@ -655,7 +696,7 @@ async function enrichTrackWithDonation(track, musicService) {
   const profile = await musicService.getUserProfile(track.uploaderUserId);
   return {
     ...track,
-    tonAddress: profile.tonAddress,
+    supportsStars: !profile.isBanned && track.supportsStars !== false,
   };
 }
 
@@ -686,7 +727,7 @@ async function openCabinetReply(ctx, musicService, logger, platformSettings) {
 
   await logger.log("cabinet_requested", {
     ...meta,
-    hasTonAddress: profile.hasTonAddress,
+    starsAvailableXtr: profile.starsAvailableXtr,
     trackCount: profile.trackCount,
   });
 
@@ -702,7 +743,7 @@ async function openCabinetEdit(ctx, musicService, logger, platformSettings) {
 
   await logger.log("cabinet_requested", {
     ...meta,
-    hasTonAddress: profile.hasTonAddress,
+    starsAvailableXtr: profile.starsAvailableXtr,
     trackCount: profile.trackCount,
   });
 
@@ -743,13 +784,6 @@ function createUploadTitleKeyboard(suggestedTitle) {
   return keyboard;
 }
 
-function createDonationPromptKeyboard() {
-  return new InlineKeyboard()
-    .text(SKIP_DONATION_LABEL, "upload:donation:skip")
-    .row()
-    .text(CANCEL_UPLOAD_LABEL, "upload:cancel");
-}
-
 function createSearchResultsKeyboard(tracks) {
   const keyboard = new InlineKeyboard();
 
@@ -765,13 +799,11 @@ function createSearchResultsKeyboard(tracks) {
   return keyboard;
 }
 
-function createSelectionKeyboard(track) {
+function createSelectionKeyboard(track, viewerUserId) {
   const keyboard = new InlineKeyboard();
 
-  if (track.tonAddress) {
-    keyboard.text("TON донат", `donate:${track.id}`).row();
-  } else if (track.donationUrl) {
-    keyboard.url("Поддержать автора", track.donationUrl).row();
+  if (track.supportsStars && track.uploaderUserId !== viewerUserId) {
+    keyboard.text("Поддержать в Stars", `donate:${track.id}`).row();
   }
 
   keyboard
@@ -786,7 +818,7 @@ function createCabinetKeyboard() {
   return new InlineKeyboard()
     .text(TRACKS_LABEL, "cab:tracks")
     .row()
-    .text(WALLET_LABEL, "cab:wallet")
+    .text(BALANCE_LABEL, "cab:balance")
     .row()
     .text(BACK_LABEL, "menu:home");
 }
@@ -803,13 +835,19 @@ function createCabinetTracksKeyboard(tracks) {
   return keyboard;
 }
 
-function createWalletPromptKeyboard(profile) {
-  const keyboard = new InlineKeyboard()
+function createBalanceKeyboard() {
+  return new InlineKeyboard()
     .text(BACK_LABEL, "menu:cabinet");
+}
 
-  if (profile.hasTonAddress) {
-    keyboard.row().text(WALLET_DISABLE_LABEL, "cab:wallet:clear");
+function createStarsAmountKeyboard(trackId, amounts) {
+  const keyboard = new InlineKeyboard();
+
+  for (const amount of amounts) {
+    keyboard.text(`${amount} XTR`, `starspay:${trackId}:${amount}`).row();
   }
+
+  keyboard.text(BACK_LABEL, `pick:${trackId}`);
 
   return keyboard;
 }
@@ -831,8 +869,10 @@ function shortenLabel(value, maxLength) {
 
 function emptyProfile() {
   return {
-    hasTonAddress: false,
-    tonAddress: "",
+    isBanned: false,
+    starsAvailableXtr: 0,
+    starsFrozenXtr: 0,
+    starsPendingXtr: 0,
     trackCount: 0,
   };
 }

@@ -2,15 +2,15 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
-import { isValidTonAddress } from "./ton.js";
-
 const DB_PATH = resolve(process.cwd(), "data", "db.json");
 const EMPTY_DB = {
+  supportIntents: [],
+  supportPayments: [],
   tracks: [],
   users: {},
 };
 
-export function createCatalogService({ dbPath = DB_PATH } = {}) {
+export function createCatalogService({ dbPath = DB_PATH, feeBps = 300, starsHoldDays = 7 } = {}) {
   let writeQueue = Promise.resolve();
 
   async function mutateDb(mutate) {
@@ -69,7 +69,7 @@ export function createCatalogService({ dbPath = DB_PATH } = {}) {
       });
     },
 
-    async finalizePendingUpload(userId, donationUrl) {
+    async finalizePendingUpload(userId) {
       return mutateDb(async (db) => {
         const user = db.users[String(userId)] ?? {};
         const pending = user.pendingUpload;
@@ -80,7 +80,6 @@ export function createCatalogService({ dbPath = DB_PATH } = {}) {
 
         const track = {
           createdAt: new Date().toISOString(),
-          donationUrl: donationUrl ?? null,
           fileId: pending.fileId,
           fileName: pending.fileName,
           fileType: pending.fileType,
@@ -97,7 +96,7 @@ export function createCatalogService({ dbPath = DB_PATH } = {}) {
         delete user.pendingUpload;
         db.users[String(userId)] = user;
 
-        return toTrackResult(track);
+        return toTrackResult(track, db);
       });
     },
 
@@ -114,11 +113,14 @@ export function createCatalogService({ dbPath = DB_PATH } = {}) {
     async getUserProfile(userId) {
       const db = await readDb(dbPath);
       const user = db.users[String(userId)] ?? {};
-      const tonAddress = isValidTonAddress(user.tonAddress ?? "") ? user.tonAddress : "";
+      const stars = deriveCreatorStarsLedger(db, Number(userId), new Date());
 
       return {
-        hasTonAddress: Boolean(tonAddress),
-        tonAddress,
+        isBanned: Boolean(user.moderation?.banned),
+        starsAvailableXtr: stars.available,
+        starsFrozenXtr: stars.frozen,
+        starsPendingXtr: stars.pending,
+        supportPaymentsCount: stars.paymentsCount,
         trackCount: db.tracks.filter((track) => track.uploaderUserId === Number(userId)).length,
       };
     },
@@ -129,13 +131,13 @@ export function createCatalogService({ dbPath = DB_PATH } = {}) {
       return db.tracks
         .filter((track) => track.uploaderUserId === Number(userId))
         .slice(0, limit)
-        .map(toTrackResult);
+        .map((track) => toTrackResult(track, db));
     },
 
     async lookupTrack(trackId) {
       const db = await readDb(dbPath);
       const track = db.tracks.find((entry) => entry.id === trackId);
-      return track ? toTrackResult(track) : null;
+      return track ? toTrackResult(track, db) : null;
     },
 
     async savePendingTitle(userId, title) {
@@ -159,19 +161,118 @@ export function createCatalogService({ dbPath = DB_PATH } = {}) {
       });
     },
 
-    async setUserTonAddress(userId, tonAddress) {
+    async createStarsSupportIntent({ amountXtr, donorUserId, trackId }) {
       return mutateDb(async (db) => {
-        const user = ensureUserRecord(db, userId);
-        user.tonAddress = tonAddress;
-        return user.tonAddress;
+        const track = db.tracks.find((entry) => entry.id === trackId);
+
+        if (!track) {
+          return null;
+        }
+
+        const uploader = db.users[String(track.uploaderUserId)] ?? {};
+
+        if (track.uploaderUserId === Number(donorUserId) || uploader.moderation?.banned) {
+          return null;
+        }
+
+        const intentId = randomUUID();
+        const payload = `stars:${intentId}`;
+        const amount = Math.max(1, Number.parseInt(String(amountXtr), 10) || 0);
+        const authorShareXtr = calculateAuthorShare(amount, feeBps);
+        const platformShareXtr = amount - authorShareXtr;
+        const createdAt = new Date();
+        const expiresAt = new Date(createdAt.getTime() + 5 * 60 * 1000);
+
+        const intent = {
+          amountXtr: amount,
+          authorShareXtr,
+          authorUserId: track.uploaderUserId,
+          createdAt: createdAt.toISOString(),
+          donorUserId: Number(donorUserId),
+          expiresAt: expiresAt.toISOString(),
+          id: intentId,
+          payload,
+          platformShareXtr,
+          status: "created",
+          trackId: track.id,
+          trackTitle: track.title,
+          uploaderName: track.uploaderName,
+        };
+
+        db.supportIntents.unshift(intent);
+        return intent;
       });
     },
 
-    async clearUserTonAddress(userId) {
+    async getStarsSupportIntent(payload) {
+      const db = await readDb(dbPath);
+      return db.supportIntents.find((intent) => intent.payload === payload) ?? null;
+    },
+
+    async approveStarsSupportIntent(payload, donorUserId) {
       return mutateDb(async (db) => {
-        const user = ensureUserRecord(db, userId);
-        delete user.tonAddress;
-        return true;
+        const intent = db.supportIntents.find((entry) => entry.payload === payload);
+
+        if (!isIntentValid(intent, donorUserId)) {
+          return null;
+        }
+
+        intent.status = "prechecked";
+        intent.precheckedAt = new Date().toISOString();
+        return intent;
+      });
+    },
+
+    async completeStarsSupportPayment({
+      donorUserId,
+      payload,
+      providerPaymentChargeId,
+      telegramPaymentChargeId,
+      totalAmountXtr,
+    }) {
+      return mutateDb(async (db) => {
+        const existing = db.supportPayments.find((payment) => payment.telegramPaymentChargeId === telegramPaymentChargeId);
+
+        if (existing) {
+          return existing;
+        }
+
+        const intent = db.supportIntents.find((entry) => entry.payload === payload);
+
+        if (!isIntentValid(intent, donorUserId)) {
+          return null;
+        }
+
+        if (Number(totalAmountXtr) !== Number(intent.amountXtr)) {
+          return null;
+        }
+
+        const paidAt = new Date();
+        const releaseAt = new Date(paidAt.getTime() + starsHoldDays * 24 * 60 * 60 * 1000);
+        const payment = {
+          amountXtr: intent.amountXtr,
+          authorShareXtr: intent.authorShareXtr,
+          authorUserId: intent.authorUserId,
+          donorUserId: Number(donorUserId),
+          id: randomUUID(),
+          intentId: intent.id,
+          paidAt: paidAt.toISOString(),
+          payload,
+          platformShareXtr: intent.platformShareXtr,
+          providerPaymentChargeId: providerPaymentChargeId ?? "",
+          releaseAt: releaseAt.toISOString(),
+          status: "successful",
+          telegramPaymentChargeId,
+          trackId: intent.trackId,
+          trackTitle: intent.trackTitle,
+          uploaderName: intent.uploaderName,
+        };
+
+        intent.status = "paid";
+        intent.paidAt = paidAt.toISOString();
+        db.supportPayments.unshift(payment);
+
+        return payment;
       });
     },
 
@@ -187,7 +288,7 @@ export function createCatalogService({ dbPath = DB_PATH } = {}) {
         .filter((entry) => entry.score > 0)
         .sort((left, right) => right.score - left.score || Date.parse(right.track.createdAt) - Date.parse(left.track.createdAt))
         .slice(0, limit)
-        .map((entry) => toTrackResult(entry.track));
+        .map((entry) => toTrackResult(entry.track, db));
     },
   };
 }
@@ -209,6 +310,8 @@ async function readDb(dbPath) {
 
 function normalizeDb(db) {
   return {
+    supportIntents: Array.isArray(db?.supportIntents) ? db.supportIntents : [],
+    supportPayments: Array.isArray(db?.supportPayments) ? db.supportPayments : [],
     tracks: Array.isArray(db?.tracks) ? db.tracks : [],
     users: typeof db?.users === "object" && db.users !== null ? db.users : {},
   };
@@ -257,15 +360,77 @@ function scoreTrack(track, query) {
   return 0;
 }
 
-function toTrackResult(track) {
+function calculateAuthorShare(amountXtr, feeBps) {
+  const gross = Number.parseInt(String(amountXtr), 10) || 0;
+  return Math.max(0, Math.floor((gross * (10000 - feeBps)) / 10000));
+}
+
+function deriveCreatorStarsLedger(db, userId, now) {
+  let available = 0;
+  let frozen = 0;
+  let pending = 0;
+  let paymentsCount = 0;
+  const isBanned = Boolean(db.users[String(userId)]?.moderation?.banned);
+
+  for (const payment of db.supportPayments) {
+    if (payment.authorUserId !== userId || payment.status !== "successful") {
+      continue;
+    }
+
+    paymentsCount += 1;
+
+    if (isBanned) {
+      frozen += payment.authorShareXtr;
+      continue;
+    }
+
+    if (Date.parse(payment.releaseAt) > now.getTime()) {
+      pending += payment.authorShareXtr;
+      continue;
+    }
+
+    available += payment.authorShareXtr;
+  }
+
+  return {
+    available,
+    frozen,
+    paymentsCount,
+    pending,
+  };
+}
+
+function isIntentValid(intent, donorUserId) {
+  if (!intent) {
+    return false;
+  }
+
+  if (intent.status === "paid" || intent.status === "expired") {
+    return false;
+  }
+
+  if (intent.donorUserId !== Number(donorUserId)) {
+    return false;
+  }
+
+  if (Date.parse(intent.expiresAt) <= Date.now()) {
+    return false;
+  }
+
+  return true;
+}
+
+function toTrackResult(track, db) {
+  const uploader = db.users[String(track.uploaderUserId)] ?? {};
+
   return {
     createdAt: track.createdAt,
-    donationUrl: track.donationUrl ?? null,
     fileId: track.fileId,
     fileType: track.fileType,
     id: track.id,
     mimeType: track.mimeType,
     suggestedTitle: track.suggestedTitle ?? "",
+    supportsStars: !uploader.moderation?.banned,
     title: track.title,
     uploaderName: track.uploaderName,
     uploaderUserId: track.uploaderUserId,

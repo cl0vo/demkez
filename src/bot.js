@@ -15,6 +15,22 @@ export function createBot({ token, musicService, logger, platformSettings, repla
     await handlers.handleMyTracks(ctx);
   });
 
+  bot.command("balance", async (ctx) => {
+    await handlers.handleBalance(ctx);
+  });
+
+  bot.command("paysupport", async (ctx) => {
+    await handlers.handlePaySupport(ctx);
+  });
+
+  bot.on("message:successful_payment", async (ctx) => {
+    await handlers.handleSuccessfulPayment(ctx);
+  });
+
+  bot.preCheckoutQuery(/^stars:/, async (ctx) => {
+    await handlers.handlePreCheckout(ctx);
+  });
+
   bot.on("message:text", async (ctx) => {
     await handlers.handleTextMessage(ctx);
   });
@@ -29,6 +45,10 @@ export function createBot({ token, musicService, logger, platformSettings, repla
 
   bot.callbackQuery(/^cabtrack:(.+)$/, async (ctx) => {
     await handlers.handleCabinetTrackCallback(ctx, ctx.match[1]);
+  });
+
+  bot.callbackQuery(/^starspay:(.+):(\d+)$/, async (ctx) => {
+    await handlers.handleStarsAmountCallback(ctx, ctx.match[1], Number.parseInt(ctx.match[2], 10));
   });
 
   bot.callbackQuery(/^upload:title:use$/, async (ctx) => {
@@ -47,7 +67,7 @@ export function createBot({ token, musicService, logger, platformSettings, repla
     await handlers.handleMenuCallback(ctx, ctx.match[1]);
   });
 
-  bot.callbackQuery(/^cab:(tracks|wallet|wallet:clear)$/, async (ctx) => {
+  bot.callbackQuery(/^cab:(tracks|balance)$/, async (ctx) => {
     await handlers.handleCabinetCallback(ctx, ctx.match[1]);
   });
 

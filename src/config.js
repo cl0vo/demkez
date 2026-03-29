@@ -9,9 +9,17 @@ export function getBotToken() {
 }
 
 export function getPlatformSettings() {
+  const supportAmounts = String(process.env.STARS_SUPPORT_AMOUNTS ?? "50,100,250")
+    .split(",")
+    .map((value) => Number.parseInt(value.trim(), 10))
+    .filter((value) => Number.isInteger(value) && value > 0)
+    .slice(0, 4);
+
   return {
     feeBps: 300,
     feePercentLabel: "3%",
-    platformTonAddress: process.env.PLATFORM_TON_ADDRESS?.trim() ?? "",
+    paySupportHandle: process.env.PAY_SUPPORT_HANDLE?.trim() ?? "",
+    starsHoldDays: Number.parseInt(process.env.STARS_HOLD_DAYS ?? "7", 10) || 7,
+    starsSupportAmounts: supportAmounts.length > 0 ? supportAmounts : [50, 100, 250],
   };
 }

@@ -7,7 +7,10 @@ import { createReplayStore } from "./replay-store.js";
 const logger = createLogger();
 const platformSettings = getPlatformSettings();
 const replayStore = createReplayStore();
-const musicService = createCatalogService();
+const musicService = createCatalogService({
+  feeBps: platformSettings.feeBps,
+  starsHoldDays: platformSettings.starsHoldDays,
+});
 
 const bot = createBot({
   token: getBotToken(),
@@ -22,6 +25,8 @@ async function bootstrap() {
   await bot.api.setMyCommands([
     { command: "start", description: "Начать" },
     { command: "my", description: "Мои треки" },
+    { command: "balance", description: "Stars баланс" },
+    { command: "paysupport", description: "Поддержка оплаты" },
   ]);
   await logger.log("bot_polling_started", { mode: "polling" });
   await bot.start();
