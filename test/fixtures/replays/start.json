@@ -1,0 +1,25 @@
+{
+  "name": "start flow",
+  "update": {
+    "update_id": 100,
+    "message": {
+      "message_id": 1,
+      "date": 0,
+      "text": "/start",
+      "chat": {
+        "id": 10,
+        "type": "private"
+      },
+      "from": {
+        "id": 20,
+        "is_bot": false,
+        "first_name": "Test"
+      }
+    }
+  },
+  "service": {},
+  "expect": {
+    "route": "command:start",
+    "replyText": "Demkez — мини-платформа для обмена mp3.\nИщи треки по названию или загружай свои."
+  }
+}

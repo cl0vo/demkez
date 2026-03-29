@@ -1,0 +1,19 @@
+{
+  "name": "demkez-bot",
+  "version": "1.0.0",
+  "description": "Telegram bot demkez for community audio uploads and search.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node --env-file-if-exists=.env src/index.js",
+    "dev": "node --watch --env-file-if-exists=.env src/index.js",
+    "test": "node --test",
+    "replay": "node scripts/replay-fixtures.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "grammy": "^1.38.3"
+  }
+}

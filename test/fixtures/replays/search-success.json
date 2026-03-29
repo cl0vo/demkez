@@ -1,0 +1,42 @@
+{
+  "name": "search success",
+  "update": {
+    "update_id": 101,
+    "message": {
+      "message_id": 2,
+      "date": 0,
+      "text": "demo",
+      "chat": {
+        "id": 10,
+        "type": "private"
+      },
+      "from": {
+        "id": 20,
+        "is_bot": false,
+        "first_name": "Test",
+        "username": "tester"
+      }
+    }
+  },
+  "state": {
+    "tracks": [
+      {
+        "id": "track-1",
+        "title": "My Demo",
+        "uploaderName": "@tester",
+        "uploaderUserId": 20,
+        "uploaderUsername": "tester",
+        "fileId": "audio-file-1",
+        "fileType": "audio"
+      }
+    ],
+    "users": {}
+  },
+  "expect": {
+    "route": "message:text",
+    "replyText": "Вот что нашлось:",
+    "buttonTexts": [
+      "My Demo · @tester"
+    ]
+  }
+}

@@ -1,0 +1,49 @@
+{
+  "name": "pick success",
+  "update": {
+    "update_id": 102,
+    "callback_query": {
+      "id": "callback-1",
+      "data": "pick:track-1",
+      "from": {
+        "id": 20,
+        "is_bot": false,
+        "first_name": "Test",
+        "username": "tester"
+      },
+      "message": {
+        "message_id": 3,
+        "date": 0,
+        "text": "Вот что нашлось:",
+        "chat": {
+          "id": 10,
+          "type": "private"
+        }
+      }
+    }
+  },
+  "state": {
+    "tracks": [
+      {
+        "id": "track-1",
+        "title": "My Demo",
+        "uploaderName": "@tester",
+        "uploaderUserId": 20,
+        "uploaderUsername": "tester",
+        "fileId": "audio-file-1",
+        "fileType": "audio",
+        "donationUrl": "https://example.com/donate"
+      }
+    ],
+    "users": {}
+  },
+  "expect": {
+    "route": "callback:pick",
+    "actionTypes": [
+      "answer_callback_query",
+      "reply_with_audio",
+      "reply",
+      "edit_message_text"
+    ]
+  }
+}
