@@ -14,7 +14,7 @@
       "message": {
         "message_id": 3,
         "date": 0,
-        "text": "Вот что нашлось:",
+        "text": "Вот что нашлось",
         "chat": {
           "id": 10,
           "type": "private"
@@ -41,8 +41,8 @@
     "route": "callback:pick",
     "actionTypes": [
       "answer_callback_query",
+      "create_invoice_link",
       "reply_with_audio",
-      "reply",
       "edit_message_text"
     ]
   }

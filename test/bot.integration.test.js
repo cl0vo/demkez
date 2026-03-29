@@ -3,9 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   SEARCH_RESULTS_PROMPT,
-  SENT_TRACK_PROMPT,
   START_PROMPT,
-  STARS_PAYMENT_SUCCESS_PROMPT,
   TITLE_SUGGESTION_SAVED_PROMPT,
 } from "../src/messages.js";
 import { dispatchSyntheticUpdate } from "../src/synthetic.js";
@@ -13,9 +11,14 @@ import { dispatchSyntheticUpdate } from "../src/synthetic.js";
 const PLATFORM_SETTINGS = {
   feeBps: 300,
   feePercentLabel: "3%",
-  paySupportHandle: "@demkez_support",
+  paySupportHandle: "@demohub_support",
   starsHoldDays: 7,
-  starsSupportAmounts: [50, 100, 250],
+  starsSupportAmounts: [10, 25, 50],
+  uploadDailyLimit: 20,
+  uploadMaxBytes: 25 * 1024 * 1024,
+  uploadMaxMb: 25,
+  uploadWindowHours: 24,
+  withdrawMinStars: 100,
 };
 
 test("start command replies with upload and search prompt", async () => {
@@ -31,12 +34,36 @@ test("upload prompt includes suggested title and quick-pick button", async () =>
   const execution = await dispatchSyntheticUpdate(createAudioUploadUpdate(), deps);
 
   assert.equal(execution.route, "message:upload");
-  assert.match(execution.actions[0].text, /Например: Travis Scott - FE!N/);
-  assert.match(execution.actions[0].text, /Похоже на: Travis Scott - FE!N/);
+  assert.match(execution.actions[0].text, /Например: <code>Travis Scott - FE!N<\/code>/);
+  assert.match(execution.actions[0].text, /<b>Подсказка:<\/b> Travis Scott - FE!N/);
   assert.equal(
     execution.actions[0].options.reply_markup.inline_keyboard[0][0].callback_data,
     "upload:title:use",
   );
+});
+
+test("upload rejects file over max size", async () => {
+  const deps = createTestDeps();
+  const execution = await dispatchSyntheticUpdate(createAudioUploadUpdate({ fileSize: 30 * 1024 * 1024 }), deps);
+
+  assert.equal(execution.route, "message:upload");
+  assert.match(execution.actions[0].text, /Файл слишком большой/);
+});
+
+test("upload rejects when 24h limit is reached", async () => {
+  const deps = createTestDeps({
+    state: {
+      supportIntents: [],
+      supportPayments: [],
+      tracks: Array.from({ length: 20 }, (_, index) => track(`track-${index + 1}`, `Demo ${index + 1}`, "@tester")),
+      users: {},
+    },
+  });
+
+  const execution = await dispatchSyntheticUpdate(createAudioUploadUpdate(), deps);
+
+  assert.equal(execution.route, "message:upload");
+  assert.match(execution.actions[0].text, /Лимит загрузок на сегодня исчерпан/);
 });
 
 test("suggested title callback publishes track immediately", async () => {
@@ -55,14 +82,14 @@ test("cabinet opens with stars balance entry", async () => {
 
   const cabinet = await dispatchSyntheticUpdate(createTextUpdate("/my", 10), deps);
   assert.equal(cabinet.route, "command:my");
-  assert.match(cabinet.actions[0].text, /demkez кабинет/);
-  assert.match(cabinet.actions[0].text, /Донаты: Telegram Stars/);
+  assert.match(cabinet.actions[0].text, /^👤 <b>Кабинет<\/b>/);
+  assert.match(cabinet.actions[0].text, /⭐ Баланс: 0 Stars/);
   const cabinetButtons = cabinet.actions[0].options.reply_markup.inline_keyboard.flat().map((button) => button.text);
-  assert.deepEqual(cabinetButtons, ["Мои треки", "Stars баланс", "Назад"]);
+  assert.deepEqual(cabinetButtons, ["🎵 Мои треки", "💸 Вывод", "← Назад"]);
 
-  const balance = await dispatchSyntheticUpdate(createCallbackUpdate("cab:balance"), deps);
+  const balance = await dispatchSyntheticUpdate(createCallbackUpdate("cab:withdraw"), deps);
   assert.equal(balance.route, "callback:cabinet");
-  assert.match(balance.actions[1].text, /^Stars баланс/);
+  assert.match(balance.actions[1].text, /^💸 <b>Вывод Stars<\/b>/);
 });
 
 test("balance command opens stars balance directly", async () => {
@@ -71,7 +98,20 @@ test("balance command opens stars balance directly", async () => {
   const execution = await dispatchSyntheticUpdate(createTextUpdate("/balance", 14), deps);
 
   assert.equal(execution.route, "command:balance");
-  assert.match(execution.actions[0].text, /^Stars баланс/);
+  assert.match(execution.actions[0].text, /^⭐ <b>Баланс<\/b>/);
+  assert.match(execution.actions[0].text, /Вывод открывается от <b>100 Stars<\/b>/);
+});
+
+test("rules command returns upload and balance rules", async () => {
+  const deps = createTestDeps();
+
+  const execution = await dispatchSyntheticUpdate(createTextUpdate("/rules", 15), deps);
+
+  assert.equal(execution.route, "command:rules");
+  assert.match(execution.actions[0].text, /📘 <b>Как работает DemoHub<\/b>/);
+  assert.match(execution.actions[0].text, /до 25 MB на файл/);
+  assert.match(execution.actions[0].text, /до 20 загрузок за 24 часа/);
+  assert.match(execution.actions[0].text, /Stars<\/b> за поддержку будут зачисляться владельцу трека на внутренний баланс/);
 });
 
 test("search returns saved tracks as inline buttons", async () => {
@@ -89,9 +129,53 @@ test("search returns saved tracks as inline buttons", async () => {
   assert.equal(execution.actions[1].text, SEARCH_RESULTS_PROMPT);
   const buttons = execution.actions[1].options.reply_markup.inline_keyboard.flat().map((button) => button.text);
 
-  assert.deepEqual(buttons.slice(0, 1), ["My Demo · @tester"]);
-  assert.ok(buttons.includes("Новый поиск"));
-  assert.ok(buttons.includes("Кабинет"));
+  assert.deepEqual(buttons.slice(0, 1), ["My Demo"]);
+  assert.ok(!buttons.includes("@tester"));
+});
+
+test("search does not match uploader nickname", async () => {
+  const deps = createTestDeps({
+    state: {
+      supportIntents: [],
+      supportPayments: [],
+      tracks: [track("track-1", "My Demo", "@tester")],
+      users: {},
+    },
+  });
+
+  const execution = await dispatchSyntheticUpdate(createTextUpdate("@tester", 6), deps);
+
+  assert.equal(execution.route, "message:text");
+  assert.equal(execution.actions[1].text, "Ничего не нашлось.\nПопробуйте другой запрос.");
+});
+
+test("search paginates long result lists", async () => {
+  const deps = createTestDeps({
+    state: {
+      supportIntents: [],
+      supportPayments: [],
+      tracks: Array.from({ length: 10 }, (_, index) => track(`track-${index + 1}`, `Monday ${index + 1}`, "@tester", 20, 120 + index)),
+      users: {},
+    },
+  });
+
+  const search = await dispatchSyntheticUpdate(createTextUpdate("monday", 7), deps);
+
+  assert.equal(search.route, "message:text");
+  assert.deepEqual(
+    search.actions[1].options.reply_markup.inline_keyboard.slice(-1)[0].map((button) => button.text),
+    ["◀️", "1/2", "▶️"],
+  );
+
+  const nextPage = await dispatchSyntheticUpdate(createCallbackUpdate("searchpage:1"), deps);
+
+  assert.equal(nextPage.route, "callback:searchpage");
+  assert.equal(nextPage.actions[1].text, SEARCH_RESULTS_PROMPT);
+  assert.match(nextPage.actions[1].options.reply_markup.inline_keyboard[0][0].text, /Monday 9|Monday 10/);
+  assert.deepEqual(
+    nextPage.actions[1].options.reply_markup.inline_keyboard.slice(-1)[0].map((button) => button.text),
+    ["◀️", "2/2", "▶️"],
+  );
 });
 
 test("search prompt keeps only one back button", async () => {
@@ -100,10 +184,10 @@ test("search prompt keeps only one back button", async () => {
   const execution = await dispatchSyntheticUpdate(createCallbackUpdate("menu:search"), deps);
 
   assert.equal(execution.route, "callback:menu");
-  assert.equal(execution.actions[1].text, "Напиши название трека");
+  assert.equal(execution.actions[1].text, "🔎 <b>Поиск</b>\nНапишите название трека или артиста.");
   assert.deepEqual(
     execution.actions[1].options.reply_markup.inline_keyboard,
-    [[{ text: "Назад", callback_data: "menu:home" }]],
+    [[{ text: "← Назад", callback_data: "menu:home" }]],
   );
 });
 
@@ -120,10 +204,10 @@ test("cabinet tracks renders as track buttons with back button", async () => {
   const execution = await dispatchSyntheticUpdate(createCallbackUpdate("cab:tracks"), deps);
 
   assert.equal(execution.route, "callback:cabinet");
-  assert.equal(execution.actions[1].text, "Твои треки");
+  assert.equal(execution.actions[1].text, "🎵 <b>Мои треки</b>");
   assert.deepEqual(
     execution.actions[1].options.reply_markup.inline_keyboard.map((row) => row[0].text),
-    ["My Demo · @tester", "Second Demo · @tester", "Назад"],
+    ["My Demo", "Second Demo", "← Назад"],
   );
   assert.equal(
     execution.actions[1].options.reply_markup.inline_keyboard[0][0].callback_data,
@@ -146,8 +230,10 @@ test("cabinet track selection reposts audio without closing menu", async () => {
   assert.equal(execution.route, "callback:cabtrack");
   assert.deepEqual(
     execution.actions.map((action) => action.type),
-    ["answer_callback_query", "reply_with_audio"],
+    ["answer_callback_query", "create_invoice_link", "reply_with_audio", "edit_message_text"],
   );
+  assert.match(execution.actions[2].options.caption, /<a href="https:\/\/t\.me\/invoice\/stars:intent-1">💫 Поддержать<\/a>/);
+  assert.match(execution.actions[3].text, /Трек открыт/);
 });
 
 test("selection sends stored audio and exposes stars button", async () => {
@@ -164,11 +250,11 @@ test("selection sends stored audio and exposes stars button", async () => {
 
   assert.deepEqual(
     execution.actions.map((action) => action.type),
-    ["answer_callback_query", "reply_with_audio", "reply", "edit_message_text"],
+    ["answer_callback_query", "create_invoice_link", "reply_with_audio", "edit_message_text"],
   );
-  assert.equal(execution.actions[2].text, SENT_TRACK_PROMPT);
-  assert.equal(execution.actions[3].options.reply_markup.inline_keyboard[0][0].callback_data, "donate:track-1");
-  assert.match(execution.actions[3].text, /Поддержка: Telegram Stars/);
+  assert.match(execution.actions[2].options.caption, /uploaded by @tester/);
+  assert.match(execution.actions[2].options.caption, /<a href="https:\/\/t\.me\/invoice\/stars:intent-1">💫 Поддержать<\/a>/);
+  assert.match(execution.actions[3].text, /Трек открыт/);
 });
 
 test("stars donate callback shows amount options", async () => {
@@ -184,9 +270,9 @@ test("stars donate callback shows amount options", async () => {
   const execution = await dispatchSyntheticUpdate(createCallbackUpdate("donate:track-1"), deps);
 
   assert.equal(execution.route, "callback:donate");
-  assert.match(execution.actions[1].text, /^Поддержать <b>My Demo<\/b>/);
+  assert.match(execution.actions[1].text, /^⭐ <b>Поддержать трек<\/b>/);
   const buttons = execution.actions[1].options.reply_markup.inline_keyboard.flat().map((button) => button.text);
-  assert.deepEqual(buttons, ["50 XTR", "100 XTR", "250 XTR", "Назад"]);
+  assert.deepEqual(buttons, ["10 XTR", "25 XTR", "50 XTR", "← Назад"]);
 });
 
 test("stars amount callback creates invoice", async () => {
@@ -199,7 +285,7 @@ test("stars amount callback creates invoice", async () => {
     },
   });
 
-  const execution = await dispatchSyntheticUpdate(createCallbackUpdate("starspay:track-1:100"), deps);
+  const execution = await dispatchSyntheticUpdate(createCallbackUpdate("starspay:track-1:25"), deps);
 
   assert.equal(execution.route, "callback:starspay");
   assert.deepEqual(
@@ -207,7 +293,7 @@ test("stars amount callback creates invoice", async () => {
     ["answer_callback_query", "reply_with_invoice"],
   );
   assert.equal(execution.actions[1].currency, "XTR");
-  assert.equal(execution.actions[1].prices[0].amount, 100);
+  assert.equal(execution.actions[1].prices[0].amount, 25);
 });
 
 test("pre checkout approves valid stars payload", async () => {
@@ -245,9 +331,45 @@ test("successful stars payment updates internal balance", async () => {
   const execution = await dispatchSyntheticUpdate(createSuccessfulPaymentUpdate("stars:intent-1", 100), deps);
 
   assert.equal(execution.route, "message:successful_payment");
-  assert.equal(execution.actions[0].text, STARS_PAYMENT_SUCCESS_PROMPT);
+  assert.match(execution.actions[0].text, /На баланс владельца зачислено: <b>\+97 Stars<\/b>/);
   assert.equal(deps.state.supportPayments.length, 1);
   assert.equal(deps.state.supportPayments[0].authorShareXtr, 97);
+});
+
+test("withdraw request opens support instructions when stars threshold is reached", async () => {
+  const deps = createTestDeps({
+    state: {
+      supportIntents: [],
+      supportPayments: [
+        {
+          authorShareXtr: 120,
+          authorUserId: 20,
+          paidAt: new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString(),
+          releaseAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString(),
+          status: "successful",
+        },
+      ],
+      tracks: [],
+      users: {},
+    },
+  });
+
+  const withdraw = await dispatchSyntheticUpdate(createCallbackUpdate("cab:withdraw"), deps);
+
+  assert.equal(withdraw.route, "callback:cabinet");
+  assert.deepEqual(
+    withdraw.actions[1].options.reply_markup.inline_keyboard,
+    [
+      [{ text: "✉️ Запросить вывод", callback_data: "withdraw:request" }],
+      [{ text: "← Назад", callback_data: "menu:cabinet" }],
+    ],
+  );
+
+  const request = await dispatchSyntheticUpdate(createCallbackUpdate("withdraw:request"), deps);
+
+  assert.equal(request.route, "callback:withdraw_request");
+  assert.match(request.actions[1].text, /Заявка на вывод/);
+  assert.match(request.actions[1].text, /@demohub_support/);
 });
 
 function createTestDeps({ state = { supportIntents: [], supportPayments: [], tracks: [], users: {} } } = {}) {
@@ -285,10 +407,18 @@ function createMemoryCatalog(state) {
     async clearPendingUpload() {
       return false;
     },
+    async clearUiPanel(userId) {
+      delete state.users[String(userId)]?.uiPanel;
+      return true;
+    },
+    async getRecentUploadCount(userId, windowHours) {
+      const cutoff = Date.now() - windowHours * 60 * 60 * 1000;
+      return state.tracks.filter((entry) => entry.uploaderUserId === Number(userId) && Date.parse(entry.createdAt) >= cutoff).length;
+    },
     async createStarsSupportIntent({ amountXtr, donorUserId, trackId }) {
       const trackEntry = state.tracks.find((entry) => entry.id === trackId);
 
-      if (!trackEntry || trackEntry.uploaderUserId === Number(donorUserId)) {
+      if (!trackEntry) {
         return null;
       }
 
@@ -370,13 +500,27 @@ function createMemoryCatalog(state) {
     async getPendingUpload(userId) {
       return state.users[String(userId)]?.pendingUpload ?? null;
     },
+    async getSearchSession(userId) {
+      return state.users[String(userId)]?.searchSession ?? null;
+    },
+    async getUiPanel(userId) {
+      return state.users[String(userId)]?.uiPanel ?? null;
+    },
     async getUserProfile(userId) {
       const payments = state.supportPayments.filter((payment) => payment.authorUserId === Number(userId) && payment.status === "successful");
+      const now = Date.now();
+      const available = payments
+        .filter((payment) => payment.releaseAt && Date.parse(payment.releaseAt) <= now)
+        .reduce((sum, payment) => sum + payment.authorShareXtr, 0);
+      const pending = payments
+        .filter((payment) => !payment.releaseAt || Date.parse(payment.releaseAt) > now)
+        .reduce((sum, payment) => sum + payment.authorShareXtr, 0);
       return {
         isBanned: false,
-        starsAvailableXtr: 0,
+        starsAvailableXtr: available,
         starsFrozenXtr: 0,
-        starsPendingXtr: payments.reduce((sum, payment) => sum + payment.authorShareXtr, 0),
+        starsPendingXtr: pending,
+        starsTotalXtr: available + pending,
         supportPaymentsCount: payments.length,
         trackCount: state.tracks.filter((trackEntry) => trackEntry.uploaderUserId === Number(userId)).length,
       };
@@ -391,14 +535,24 @@ function createMemoryCatalog(state) {
       state.users[String(userId)].pendingUpload.title = title;
       return state.users[String(userId)].pendingUpload;
     },
-    async searchTracks(query) {
+    async searchTracks(query, limit = 5) {
       const normalized = query.toLowerCase();
-      return state.tracks.filter((trackEntry) => trackEntry.title.toLowerCase().includes(normalized)).slice(0, 5);
+      return state.tracks.filter((trackEntry) => trackEntry.title.toLowerCase().includes(normalized)).slice(0, limit);
+    },
+    async setSearchSession(userId, session) {
+      state.users[String(userId)] ??= {};
+      state.users[String(userId)].searchSession = session;
+      return session;
     },
     async setPendingAction(userId, action) {
       state.users[String(userId)] ??= {};
       state.users[String(userId)].pendingAction = action;
       return action;
+    },
+    async setUiPanel(userId, panel) {
+      state.users[String(userId)] ??= {};
+      state.users[String(userId)].uiPanel = panel;
+      return panel;
     },
   };
 }
@@ -416,13 +570,14 @@ function createTextUpdate(text, updateId) {
   };
 }
 
-function createAudioUploadUpdate() {
+function createAudioUploadUpdate({ fileSize = 5 * 1024 * 1024 } = {}) {
   return {
     message: {
       audio: {
         duration: 10,
         file_id: "audio-file-1",
         file_name: "travis_scott-fein.mp3",
+        file_size: fileSize,
         mime_type: "audio/mpeg",
         performer: "Travis Scott",
         title: "FE!N",
@@ -502,9 +657,10 @@ function createSuccessfulPaymentUpdate(payload, amount) {
   };
 }
 
-function track(id, title, uploaderName, uploaderUserId = 20) {
+function track(id, title, uploaderName, uploaderUserId = 20, durationSeconds = 0) {
   return {
     createdAt: new Date().toISOString(),
+    durationSeconds,
     fileId: "audio-file-1",
     fileType: "audio",
     id,

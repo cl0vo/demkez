@@ -61,6 +61,29 @@ async function runFixture(fixture) {
       async clearPendingUpload() {
         return false;
       },
+      async clearUiPanel(userId) {
+        delete state.users[String(userId)]?.uiPanel;
+        return true;
+      },
+      async createStarsSupportIntent({ amountXtr, donorUserId, trackId }) {
+        const track = state.tracks.find((entry) => entry.id === trackId);
+
+        if (!track) {
+          return null;
+        }
+
+        return {
+          amountXtr,
+          authorShareXtr: Math.floor((amountXtr * 97) / 100),
+          authorUserId: track.uploaderUserId,
+          donorUserId,
+          id: "fixture-intent-1",
+          payload: "stars:fixture-intent-1",
+          platformShareXtr: amountXtr - Math.floor((amountXtr * 97) / 100),
+          status: "created",
+          trackId,
+        };
+      },
       async finalizePendingUpload(userId) {
         const pending = state.users[String(userId)]?.pendingUpload;
 
@@ -89,12 +112,19 @@ async function runFixture(fixture) {
       async getPendingUpload(userId) {
         return state.users[String(userId)]?.pendingUpload ?? null;
       },
+      async getSearchSession(userId) {
+        return state.users[String(userId)]?.searchSession ?? null;
+      },
+      async getUiPanel(userId) {
+        return state.users[String(userId)]?.uiPanel ?? null;
+      },
       async getUserProfile(userId) {
         return {
           isBanned: false,
           starsAvailableXtr: 0,
           starsFrozenXtr: 0,
           starsPendingXtr: 0,
+          starsTotalXtr: 0,
           trackCount: state.tracks.filter((track) => track.uploaderUserId === Number(userId)).length,
         };
       },
@@ -107,21 +137,36 @@ async function runFixture(fixture) {
       async savePendingTitle(userId, title) {
         state.users[String(userId)].pendingUpload.title = title;
       },
-      async searchTracks(query) {
-        return state.tracks.filter((track) => track.title.toLowerCase().includes(query.toLowerCase())).slice(0, 5);
+      async searchTracks(query, limit = 5) {
+        return state.tracks.filter((track) => track.title.toLowerCase().includes(query.toLowerCase())).slice(0, limit);
+      },
+      async setSearchSession(userId, session) {
+        state.users[String(userId)] ??= {};
+        state.users[String(userId)].searchSession = session;
+        return session;
       },
       async setPendingAction(userId, action) {
         state.users[String(userId)] ??= {};
         state.users[String(userId)].pendingAction = action;
         return action;
       },
+      async setUiPanel(userId, panel) {
+        state.users[String(userId)] ??= {};
+        state.users[String(userId)].uiPanel = panel;
+        return panel;
+      },
     },
     platformSettings: {
       feeBps: 300,
       feePercentLabel: "3%",
-      paySupportHandle: "@demkez_support",
+      paySupportHandle: "@demohub_support",
       starsHoldDays: 7,
-      starsSupportAmounts: [50, 100, 250],
+      starsSupportAmounts: [10, 25, 50],
+      uploadDailyLimit: 20,
+      uploadMaxBytes: 25 * 1024 * 1024,
+      uploadMaxMb: 25,
+      uploadWindowHours: 24,
+      withdrawMinStars: 100,
     },
     replayStore: {
       async capture(kind, payload) {

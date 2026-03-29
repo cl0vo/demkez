@@ -34,9 +34,9 @@
   },
   "expect": {
     "route": "message:text",
-    "replyText": "Вот что нашлось:",
+    "replyText": "🔎 <b>Вот что нашлось</b>",
     "buttonTexts": [
-      "My Demo · @tester"
+      "My Demo"
     ]
   }
 }

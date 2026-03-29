@@ -33,6 +33,7 @@ export function createCatalogService({ dbPath = DB_PATH, feeBps = 300, starsHold
           ...(db.users[String(upload.userId)] ?? {}),
           pendingUpload: {
             createdAt: new Date().toISOString(),
+            durationSeconds: Number(upload.durationSeconds ?? 0),
             fileId: upload.fileId,
             fileName: upload.fileName ?? "",
             fileType: upload.fileType,
@@ -69,6 +70,14 @@ export function createCatalogService({ dbPath = DB_PATH, feeBps = 300, starsHold
       });
     },
 
+    async clearUiPanel(userId) {
+      return mutateDb(async (db) => {
+        const user = ensureUserRecord(db, userId);
+        delete user.uiPanel;
+        return true;
+      });
+    },
+
     async finalizePendingUpload(userId) {
       return mutateDb(async (db) => {
         const user = db.users[String(userId)] ?? {};
@@ -80,12 +89,13 @@ export function createCatalogService({ dbPath = DB_PATH, feeBps = 300, starsHold
 
         const track = {
           createdAt: new Date().toISOString(),
+          durationSeconds: Number(pending.durationSeconds ?? 0),
           fileId: pending.fileId,
           fileName: pending.fileName,
           fileType: pending.fileType,
           id: randomUUID(),
           mimeType: pending.mimeType,
-          searchIndex: buildSearchIndex(pending.title, pending.uploaderName, pending.uploaderUsername),
+          searchIndex: buildSearchIndex(pending.title),
           title: pending.title,
           uploaderName: pending.uploaderName,
           uploaderUserId: Number(userId),
@@ -105,9 +115,29 @@ export function createCatalogService({ dbPath = DB_PATH, feeBps = 300, starsHold
       return db.users[String(userId)]?.pendingUpload ?? null;
     },
 
+    async getRecentUploadCount(userId, windowHours = 24) {
+      const db = await readDb(dbPath);
+      const cutoff = Date.now() - windowHours * 60 * 60 * 1000;
+
+      return db.tracks.filter((track) => (
+        track.uploaderUserId === Number(userId)
+        && Date.parse(track.createdAt) >= cutoff
+      )).length;
+    },
+
     async getPendingAction(userId) {
       const db = await readDb(dbPath);
       return db.users[String(userId)]?.pendingAction ?? null;
+    },
+
+    async getUiPanel(userId) {
+      const db = await readDb(dbPath);
+      return db.users[String(userId)]?.uiPanel ?? null;
+    },
+
+    async getSearchSession(userId) {
+      const db = await readDb(dbPath);
+      return db.users[String(userId)]?.searchSession ?? null;
     },
 
     async getUserProfile(userId) {
@@ -120,6 +150,7 @@ export function createCatalogService({ dbPath = DB_PATH, feeBps = 300, starsHold
         starsAvailableXtr: stars.available,
         starsFrozenXtr: stars.frozen,
         starsPendingXtr: stars.pending,
+        starsTotalXtr: stars.total,
         supportPaymentsCount: stars.paymentsCount,
         trackCount: db.tracks.filter((track) => track.uploaderUserId === Number(userId)).length,
       };
@@ -153,11 +184,27 @@ export function createCatalogService({ dbPath = DB_PATH, feeBps = 300, starsHold
       });
     },
 
+    async setSearchSession(userId, session) {
+      return mutateDb(async (db) => {
+        const user = ensureUserRecord(db, userId);
+        user.searchSession = session;
+        return user.searchSession;
+      });
+    },
+
     async setPendingAction(userId, action) {
       return mutateDb(async (db) => {
         const user = ensureUserRecord(db, userId);
         user.pendingAction = action;
         return user.pendingAction;
+      });
+    },
+
+    async setUiPanel(userId, panel) {
+      return mutateDb(async (db) => {
+        const user = ensureUserRecord(db, userId);
+        user.uiPanel = panel;
+        return user.uiPanel;
       });
     },
 
@@ -171,7 +218,7 @@ export function createCatalogService({ dbPath = DB_PATH, feeBps = 300, starsHold
 
         const uploader = db.users[String(track.uploaderUserId)] ?? {};
 
-        if (track.uploaderUserId === Number(donorUserId) || uploader.moderation?.banned) {
+        if (uploader.moderation?.banned) {
           return null;
         }
 
@@ -322,8 +369,8 @@ function ensureUserRecord(db, userId) {
   return db.users[String(userId)];
 }
 
-function buildSearchIndex(title, uploaderName, uploaderUsername) {
-  return normalizeText([title, uploaderName, uploaderUsername].filter(Boolean).join(" "));
+function buildSearchIndex(title) {
+  return normalizeText(title);
 }
 
 function normalizeText(value) {
@@ -339,7 +386,7 @@ function scoreTrack(track, query) {
   }
 
   const title = normalizeText(track.title);
-  const searchIndex = track.searchIndex ?? buildSearchIndex(track.title, track.uploaderName, track.uploaderUsername);
+  const searchIndex = buildSearchIndex(track.title);
 
   if (title === query) {
     return 100;
@@ -397,6 +444,7 @@ function deriveCreatorStarsLedger(db, userId, now) {
     frozen,
     paymentsCount,
     pending,
+    total: available + pending + frozen,
   };
 }
 
@@ -425,6 +473,7 @@ function toTrackResult(track, db) {
 
   return {
     createdAt: track.createdAt,
+    durationSeconds: Number(track.durationSeconds ?? 0),
     fileId: track.fileId,
     fileType: track.fileType,
     id: track.id,

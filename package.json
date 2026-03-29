@@ -1,7 +1,7 @@
 {
-  "name": "demkez-bot",
+  "name": "demohub-bot",
   "version": "1.0.0",
-  "description": "Telegram bot demkez for community audio uploads and search.",
+  "description": "Telegram bot DemoHub for community audio uploads and search.",
   "type": "module",
   "private": true,
   "scripts": {

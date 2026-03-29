@@ -23,10 +23,11 @@ const bot = createBot({
 async function bootstrap() {
   await logger.log("bot_starting", { mode: "polling" });
   await bot.api.setMyCommands([
-    { command: "start", description: "Начать" },
-    { command: "my", description: "Мои треки" },
-    { command: "balance", description: "Stars баланс" },
-    { command: "paysupport", description: "Поддержка оплаты" },
+    { command: "start", description: "Открыть DemoHub" },
+    { command: "my", description: "Твои треки" },
+    { command: "balance", description: "Stars-баланс" },
+    { command: "paysupport", description: "Помощь с оплатой" },
+    { command: "rules", description: "Правила DemoHub" },
   ]);
   await logger.log("bot_polling_started", { mode: "polling" });
   await bot.start();

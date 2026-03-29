@@ -23,6 +23,10 @@ export function createBot({ token, musicService, logger, platformSettings, repla
     await handlers.handlePaySupport(ctx);
   });
 
+  bot.command("rules", async (ctx) => {
+    await handlers.handleRules(ctx);
+  });
+
   bot.on("message:successful_payment", async (ctx) => {
     await handlers.handleSuccessfulPayment(ctx);
   });
@@ -47,6 +51,15 @@ export function createBot({ token, musicService, logger, platformSettings, repla
     await handlers.handleCabinetTrackCallback(ctx, ctx.match[1]);
   });
 
+  bot.callbackQuery(/^searchpage:(stay|\d+)$/, async (ctx) => {
+    if (ctx.match[1] === "stay") {
+      await ctx.answerCallbackQuery();
+      return;
+    }
+
+    await handlers.handleSearchPageCallback(ctx, Number.parseInt(ctx.match[1], 10));
+  });
+
   bot.callbackQuery(/^starspay:(.+):(\d+)$/, async (ctx) => {
     await handlers.handleStarsAmountCallback(ctx, ctx.match[1], Number.parseInt(ctx.match[2], 10));
   });
@@ -67,8 +80,12 @@ export function createBot({ token, musicService, logger, platformSettings, repla
     await handlers.handleMenuCallback(ctx, ctx.match[1]);
   });
 
-  bot.callbackQuery(/^cab:(tracks|balance)$/, async (ctx) => {
+  bot.callbackQuery(/^cab:(tracks|withdraw)$/, async (ctx) => {
     await handlers.handleCabinetCallback(ctx, ctx.match[1]);
+  });
+
+  bot.callbackQuery(/^withdraw:request$/, async (ctx) => {
+    await handlers.handleWithdrawRequest(ctx);
   });
 
   bot.callbackQuery(/^donate:(.+)$/, async (ctx) => {

@@ -1,52 +1,62 @@
 import { InlineKeyboard } from "grammy";
 
 import {
+  SEARCH_BUTTON_PROMPT,
   EMPTY_QUERY_PROMPT,
   EMPTY_RESULTS_PROMPT,
   LOOKUP_ERROR_PROMPT,
   MY_TRACKS_EMPTY_PROMPT,
+  MY_TRACKS_TITLE,
   NON_TEXT_PROMPT,
-  PAY_SUPPORT_PROMPT,
   SEARCH_ERROR_PROMPT,
   SEARCH_RESULTS_PROMPT,
   SENT_TRACK_PROMPT,
   START_PROMPT,
-  STARS_BALANCE_PROMPT,
   STARS_INVOICE_EXPIRED_PROMPT,
-  STARS_PAYMENT_SUCCESS_PROMPT,
-  STARS_SUPPORT_PROMPT,
   STARS_SUPPORT_UNAVAILABLE_PROMPT,
+  TRACK_OPENED_PROMPT,
+  TRACK_SUPPORT_INVOICE_TITLE,
   TITLE_SUGGESTION_SAVED_PROMPT,
   UPLOAD_DONE_PROMPT,
+  UPLOAD_MENU_PROMPT,
   UPLOAD_ONLY_MP3_PROMPT,
   UPLOAD_TITLE_PROMPT,
   formatCabinetMessage,
   formatPaySupportMessage,
-  formatSelectionMessage,
+  formatRulesMessage,
   formatStarsBalanceMessage,
+  formatStarsPaymentSuccessMessage,
   formatStarsSupportMessage,
   formatTrackButton,
   formatTrackCaption,
+  formatUploadDailyLimitMessage,
+  formatUploadTooLargeMessage,
   formatUploadTitlePrompt,
+  formatWithdrawMessage,
+  formatWithdrawRequestMessage,
   normalizeQuery,
 } from "./messages.js";
 import { noopLogger, serializeError } from "./logger.js";
 import { noopReplayStore } from "./replay-store.js";
 
-const HOME_LABEL = "В меню";
-const BACK_LABEL = "Назад";
-const SEARCH_LABEL = "Поиск трека";
-const SEARCH_NEW_LABEL = "Новый поиск";
-const UPLOAD_LABEL = "Загрузить MP3";
-const CABINET_LABEL = "Кабинет";
-const TRACKS_LABEL = "Мои треки";
-const BALANCE_LABEL = "Stars баланс";
-const CANCEL_UPLOAD_LABEL = "Отменить загрузку";
+const HOME_LABEL = "🏠 Главная";
+const BACK_LABEL = "← Назад";
+const SEARCH_LABEL = "🔎 Поиск";
+const SEARCH_NEW_LABEL = "🎧 Новый поиск";
+const UPLOAD_LABEL = "⬆️ Загрузить mp3";
+const CABINET_LABEL = "👤 Кабинет";
+const TRACKS_LABEL = "🎵 Мои треки";
+const WITHDRAW_LABEL = "💸 Вывод";
+const REQUEST_WITHDRAW_LABEL = "✉️ Запросить вывод";
+const CANCEL_UPLOAD_LABEL = "✖️ Отменить";
+const HTML_MODE = "HTML";
+const SEARCH_PAGE_SIZE = 8;
+const SEARCH_RESULT_LIMIT = 96;
 
 export function createHandlers({
   musicService,
   logger = noopLogger,
-  platformSettings = { feeBps: 300, feePercentLabel: "3%", starsHoldDays: 7, starsSupportAmounts: [50, 100, 250] },
+  platformSettings = { feeBps: 300, feePercentLabel: "3%", starsHoldDays: 7, starsSupportAmounts: [10, 25, 50], withdrawMinStars: 100 },
   replayStore = noopReplayStore,
 }) {
   return {
@@ -55,8 +65,10 @@ export function createHandlers({
 
       await resetPendingState(musicService, meta.userId);
       await logger.log("start_received", meta);
-      await ctx.reply(START_PROMPT, {
-        reply_markup: createHomeKeyboard(),
+      await showPanel(ctx, musicService, {
+        parseMode: HTML_MODE,
+        replyMarkup: createHomeKeyboard(),
+        text: START_PROMPT,
       });
       await logger.log("start_replied", meta);
     },
@@ -76,14 +88,26 @@ export function createHandlers({
         starsAvailableXtr: profile.starsAvailableXtr,
       });
 
-      await ctx.reply(formatStarsBalanceMessage(profile, platformSettings), {
-        reply_markup: createBalanceKeyboard(),
+      await showPanel(ctx, musicService, {
+        parseMode: HTML_MODE,
+        replyMarkup: createWithdrawKeyboard(profile, platformSettings),
+        text: formatStarsBalanceMessage(profile, platformSettings),
       });
     },
 
     async handlePaySupport(ctx) {
-      await ctx.reply(formatPaySupportMessage(platformSettings), {
-        reply_markup: createInfoKeyboard(),
+      await showPanel(ctx, musicService, {
+        parseMode: HTML_MODE,
+        replyMarkup: createInfoKeyboard(),
+        text: formatPaySupportMessage(platformSettings),
+      });
+    },
+
+    async handleRules(ctx) {
+      await showPanel(ctx, musicService, {
+        parseMode: HTML_MODE,
+        replyMarkup: createInfoKeyboard(),
+        text: formatRulesMessage(platformSettings),
       });
     },
 
@@ -92,7 +116,7 @@ export function createHandlers({
       const rawText = ctx.message?.text ?? "";
 
       if (rawText.startsWith("/")) {
-        if (isStartCommandText(rawText) || isMyCommandText(rawText) || isBalanceCommandText(rawText) || isPaySupportCommandText(rawText)) {
+        if (isStartCommandText(rawText) || isMyCommandText(rawText) || isBalanceCommandText(rawText) || isPaySupportCommandText(rawText) || isRulesCommandText(rawText)) {
           return;
         }
 
@@ -100,8 +124,10 @@ export function createHandlers({
           ...meta,
           command: rawText,
         });
-        await ctx.reply(START_PROMPT, {
-          reply_markup: createHomeKeyboard(),
+        await showPanel(ctx, musicService, {
+          parseMode: HTML_MODE,
+          replyMarkup: createHomeKeyboard(),
+          text: START_PROMPT,
         });
         return;
       }
@@ -117,8 +143,10 @@ export function createHandlers({
 
       if (!query) {
         await logger.log("empty_query_received", meta);
-        await ctx.reply(EMPTY_QUERY_PROMPT, {
-          reply_markup: createSearchPromptKeyboard(),
+        await showPanel(ctx, musicService, {
+          parseMode: HTML_MODE,
+          replyMarkup: createSearchPromptKeyboard(),
+          text: EMPTY_QUERY_PROMPT,
         });
         return;
       }
@@ -133,22 +161,29 @@ export function createHandlers({
           await ctx.api.sendChatAction(ctx.chat.id, "typing");
         }
 
-        const tracks = await musicService.searchTracks(query, 5);
+        const tracks = await musicService.searchTracks(query, SEARCH_RESULT_LIMIT);
 
         if (tracks.length === 0) {
           await logger.log("search_empty", {
             ...meta,
             query,
           });
-          await ctx.reply(EMPTY_RESULTS_PROMPT, {
-            reply_markup: createSearchPromptKeyboard(),
+          await showPanel(ctx, musicService, {
+            parseMode: HTML_MODE,
+            replyMarkup: createSearchPromptKeyboard(),
+            text: EMPTY_RESULTS_PROMPT,
           });
           return;
         }
 
-        await ctx.reply(SEARCH_RESULTS_PROMPT, {
-          reply_markup: createSearchResultsKeyboard(tracks),
+        await musicService.setSearchSession(meta.userId, {
+          createdAt: new Date().toISOString(),
+          page: 0,
+          query,
+          trackIds: tracks.map((track) => track.id),
         });
+
+        await renderSearchResultsPanel(ctx, musicService, meta.userId, 0);
 
         await logger.log("search_results_rendered", {
           ...meta,
@@ -173,8 +208,10 @@ export function createHandlers({
           replayPath,
         });
 
-        await ctx.reply(SEARCH_ERROR_PROMPT, {
-          reply_markup: createSearchPromptKeyboard(),
+        await showPanel(ctx, musicService, {
+          parseMode: HTML_MODE,
+          replyMarkup: createSearchPromptKeyboard(),
+          text: SEARCH_ERROR_PROMPT,
         });
       }
     },
@@ -185,8 +222,10 @@ export function createHandlers({
 
       if (!upload) {
         await logger.log("non_text_received", meta);
-        await ctx.reply(NON_TEXT_PROMPT, {
-          reply_markup: createHomeKeyboard(),
+        await showPanel(ctx, musicService, {
+          parseMode: HTML_MODE,
+          replyMarkup: createHomeKeyboard(),
+          text: NON_TEXT_PROMPT,
         });
         return;
       }
@@ -197,8 +236,37 @@ export function createHandlers({
       await logger.log("upload_received", {
         ...meta,
         fileType: upload.fileType,
+        sizeBytes: upload.sizeBytes,
         suggestedTitle,
       });
+
+      if (upload.sizeBytes > platformSettings.uploadMaxBytes) {
+        await logger.log("upload_rejected_size", {
+          ...meta,
+          sizeBytes: upload.sizeBytes,
+        });
+        await showPanel(ctx, musicService, {
+          parseMode: HTML_MODE,
+          replyMarkup: createUploadPromptKeyboard(),
+          text: formatUploadTooLargeMessage(platformSettings),
+        });
+        return;
+      }
+
+      const recentUploads = await musicService.getRecentUploadCount(meta.userId, platformSettings.uploadWindowHours);
+
+      if (recentUploads >= platformSettings.uploadDailyLimit) {
+        await logger.log("upload_rejected_daily_limit", {
+          ...meta,
+          recentUploads,
+        });
+        await showPanel(ctx, musicService, {
+          parseMode: HTML_MODE,
+          replyMarkup: createHomeKeyboard(),
+          text: formatUploadDailyLimitMessage(platformSettings),
+        });
+        return;
+      }
 
       await musicService.beginUpload({
         ...upload,
@@ -220,14 +288,18 @@ export function createHandlers({
           trackId: track?.id ?? null,
           via: "caption",
         });
-        await ctx.reply(UPLOAD_DONE_PROMPT, {
-          reply_markup: createHomeKeyboard(),
+        await showPanel(ctx, musicService, {
+          parseMode: HTML_MODE,
+          replyMarkup: createHomeKeyboard(),
+          text: UPLOAD_DONE_PROMPT,
         });
         return;
       }
 
-      await ctx.reply(formatUploadTitlePrompt(suggestedTitle), {
-        reply_markup: createUploadTitleKeyboard(suggestedTitle),
+      await showPanel(ctx, musicService, {
+        parseMode: HTML_MODE,
+        replyMarkup: createUploadTitleKeyboard(suggestedTitle),
+        text: formatUploadTitlePrompt(suggestedTitle),
       });
     },
 
@@ -255,11 +327,17 @@ export function createHandlers({
           return;
         }
 
-        await sendStoredTrack(ctx, track);
-
-        await ctx.editMessageText(formatSelectionMessage(track), {
-          parse_mode: "HTML",
-          reply_markup: createSelectionKeyboard(track, meta.userId),
+        await sendStoredTrack(ctx, track, {
+          includeFollowUp: false,
+          logger,
+          musicService,
+          platformSettings,
+          viewerUserId: meta.userId,
+        });
+        await showPanel(ctx, musicService, {
+          parseMode: HTML_MODE,
+          replyMarkup: createInfoKeyboard(),
+          text: TRACK_OPENED_PROMPT,
         });
 
         await logger.log("selection_completed", {
@@ -314,7 +392,18 @@ export function createHandlers({
           return;
         }
 
-        await sendStoredTrack(ctx, track, { includeFollowUp: false });
+        await sendStoredTrack(ctx, track, {
+          includeFollowUp: false,
+          logger,
+          musicService,
+          platformSettings,
+          viewerUserId: meta.userId,
+        });
+        await showPanel(ctx, musicService, {
+          parseMode: HTML_MODE,
+          replyMarkup: createInfoKeyboard(),
+          text: TRACK_OPENED_PROMPT,
+        });
 
         await logger.log("cabinet_track_completed", {
           ...meta,
@@ -351,8 +440,10 @@ export function createHandlers({
       await ctx.answerCallbackQuery();
 
       if (!pendingUpload || !suggestedTitle) {
-        await ctx.editMessageText(UPLOAD_TITLE_PROMPT, {
-          reply_markup: createUploadTitleKeyboard(""),
+        await showPanel(ctx, musicService, {
+          parseMode: HTML_MODE,
+          replyMarkup: createUploadTitleKeyboard(""),
+          text: UPLOAD_TITLE_PROMPT,
         });
         return;
       }
@@ -371,15 +462,19 @@ export function createHandlers({
         trackId: track?.id ?? null,
         via: "suggestion",
       });
-      await ctx.editMessageText(TITLE_SUGGESTION_SAVED_PROMPT, {
-        reply_markup: createHomeKeyboard(),
+      await showPanel(ctx, musicService, {
+        parseMode: HTML_MODE,
+        replyMarkup: createHomeKeyboard(),
+        text: TITLE_SUGGESTION_SAVED_PROMPT,
       });
     },
 
     async handleSkipDonation(ctx) {
       await ctx.answerCallbackQuery();
-      await ctx.editMessageText(UPLOAD_DONE_PROMPT, {
-        reply_markup: createHomeKeyboard(),
+      await showPanel(ctx, musicService, {
+        parseMode: HTML_MODE,
+        replyMarkup: createHomeKeyboard(),
+        text: UPLOAD_DONE_PROMPT,
       });
     },
 
@@ -389,8 +484,10 @@ export function createHandlers({
       await ctx.answerCallbackQuery();
       await musicService.clearPendingUpload(meta.userId);
       await logger.log("upload_cancelled", meta);
-      await ctx.editMessageText(START_PROMPT, {
-        reply_markup: createHomeKeyboard(),
+      await showPanel(ctx, musicService, {
+        parseMode: HTML_MODE,
+        replyMarkup: createHomeKeyboard(),
+        text: START_PROMPT,
       });
     },
 
@@ -401,22 +498,28 @@ export function createHandlers({
       await resetPendingState(musicService, meta.userId);
 
       if (action === "home") {
-        await ctx.editMessageText(START_PROMPT, {
-          reply_markup: createHomeKeyboard(),
+        await showPanel(ctx, musicService, {
+          parseMode: HTML_MODE,
+          replyMarkup: createHomeKeyboard(),
+          text: START_PROMPT,
         });
         return;
       }
 
       if (action === "search") {
-        await ctx.editMessageText("Напиши название трека", {
-          reply_markup: createSearchPromptKeyboard(),
+        await showPanel(ctx, musicService, {
+          parseMode: HTML_MODE,
+          replyMarkup: createSearchPromptKeyboard(),
+          text: SEARCH_BUTTON_PROMPT,
         });
         return;
       }
 
       if (action === "upload") {
-        await ctx.editMessageText("Пришли mp3 файлом или аудио", {
-          reply_markup: createUploadPromptKeyboard(),
+        await showPanel(ctx, musicService, {
+          parseMode: HTML_MODE,
+          replyMarkup: createUploadPromptKeyboard(),
+          text: UPLOAD_MENU_PROMPT,
         });
         return;
       }
@@ -434,20 +537,52 @@ export function createHandlers({
 
       if (action === "tracks") {
         const tracks = await musicService.listUserTracks(meta.userId, 20);
-        const text = tracks.length === 0 ? MY_TRACKS_EMPTY_PROMPT : "Твои треки";
+        const text = tracks.length === 0 ? MY_TRACKS_EMPTY_PROMPT : MY_TRACKS_TITLE;
 
-        await ctx.editMessageText(text, {
-          reply_markup: createCabinetTracksKeyboard(tracks),
+        await showPanel(ctx, musicService, {
+          parseMode: HTML_MODE,
+          replyMarkup: createCabinetTracksKeyboard(tracks),
+          text,
         });
         return;
       }
 
-      if (action === "balance") {
-        await ctx.editMessageText(formatStarsBalanceMessage(profile, platformSettings), {
-          reply_markup: createBalanceKeyboard(),
+      if (action === "withdraw") {
+        await showPanel(ctx, musicService, {
+          parseMode: HTML_MODE,
+          replyMarkup: createWithdrawKeyboard(profile, platformSettings),
+          text: formatWithdrawMessage(profile, platformSettings),
         });
         return;
       }
+    },
+
+    async handleSearchPageCallback(ctx, page) {
+      const meta = getContextMeta(ctx);
+
+      await ctx.answerCallbackQuery();
+
+      const session = meta.userId ? await musicService.getSearchSession(meta.userId) : null;
+
+      if (!session?.trackIds?.length) {
+        await showPanel(ctx, musicService, {
+          parseMode: HTML_MODE,
+          replyMarkup: createSearchPromptKeyboard(),
+          text: SEARCH_BUTTON_PROMPT,
+        });
+        return;
+      }
+
+      await renderSearchResultsPanel(ctx, musicService, meta.userId, page);
+    },
+
+    async handleWithdrawRequest(ctx) {
+      await ctx.answerCallbackQuery();
+      await showPanel(ctx, musicService, {
+        parseMode: HTML_MODE,
+        replyMarkup: createWithdrawBackKeyboard(),
+        text: formatWithdrawRequestMessage(platformSettings),
+      });
     },
 
     async handleDonateCallback(ctx, trackId) {
@@ -456,7 +591,7 @@ export function createHandlers({
 
       await ctx.answerCallbackQuery();
 
-      if (!track?.supportsStars || track.uploaderUserId === meta.userId) {
+      if (!track?.supportsStars) {
         await ctx.reply(STARS_SUPPORT_UNAVAILABLE_PROMPT, {
           reply_markup: createInfoKeyboard(),
         });
@@ -467,9 +602,10 @@ export function createHandlers({
         ...meta,
         trackId,
       });
-      await ctx.reply(formatStarsSupportMessage(track, platformSettings), {
-        parse_mode: "HTML",
-        reply_markup: createStarsAmountKeyboard(trackId, platformSettings.starsSupportAmounts),
+      await showPanel(ctx, musicService, {
+        parseMode: HTML_MODE,
+        replyMarkup: createStarsAmountKeyboard(trackId, platformSettings.starsSupportAmounts),
+        text: formatStarsSupportMessage(track, platformSettings),
       });
     },
 
@@ -479,7 +615,7 @@ export function createHandlers({
 
       await ctx.answerCallbackQuery();
 
-      if (!track?.supportsStars || track.uploaderUserId === meta.userId) {
+      if (!track?.supportsStars) {
         await ctx.reply(STARS_SUPPORT_UNAVAILABLE_PROMPT, {
           reply_markup: createInfoKeyboard(),
         });
@@ -507,11 +643,11 @@ export function createHandlers({
       });
 
       await ctx.replyWithInvoice(
-        `Поддержать ${track.title}`,
-        `Поддержка автора ${track.uploaderName} в Telegram Stars`,
+        TRACK_SUPPORT_INVOICE_TITLE,
+        `${track.title} | ${track.uploaderName}`,
         intent.payload,
         "XTR",
-        [{ amount: intent.amountXtr, label: `Поддержка ${intent.amountXtr} XTR` }],
+        [{ amount: intent.amountXtr, label: `${intent.amountXtr} XTR` }],
         {
           start_parameter: `support_${trackId.slice(0, 12)}`,
         },
@@ -556,8 +692,10 @@ export function createHandlers({
       });
 
       if (!savedPayment) {
-        await ctx.reply(STARS_INVOICE_EXPIRED_PROMPT, {
-          reply_markup: createInfoKeyboard(),
+        await showPanel(ctx, musicService, {
+          parseMode: HTML_MODE,
+          replyMarkup: createInfoKeyboard(),
+          text: STARS_INVOICE_EXPIRED_PROMPT,
         });
         return;
       }
@@ -565,13 +703,17 @@ export function createHandlers({
       await logger.log("stars_payment_completed", {
         ...meta,
         amountXtr: savedPayment.amountXtr,
+        authorShareXtr: savedPayment.authorShareXtr,
         payload: payment.invoice_payload,
+        platformShareXtr: savedPayment.platformShareXtr,
         telegramPaymentChargeId: payment.telegram_payment_charge_id,
         trackId: savedPayment.trackId,
       });
 
-      await ctx.reply(STARS_PAYMENT_SUCCESS_PROMPT, {
-        reply_markup: createInfoKeyboard(),
+      await showPanel(ctx, musicService, {
+        parseMode: HTML_MODE,
+        replyMarkup: createInfoKeyboard(),
+        text: formatStarsPaymentSuccessMessage(savedPayment),
       });
     },
   };
@@ -593,13 +735,19 @@ function isPaySupportCommandText(text) {
   return /^\/paysupport(?:@\w+)?(?:\s|$)/i.test(text);
 }
 
+function isRulesCommandText(text) {
+  return /^\/rules(?:@\w+)?(?:\s|$)/i.test(text);
+}
+
 async function handlePendingUploadText(ctx, meta, rawText, pendingUpload, musicService, logger) {
   const normalized = normalizeQuery(rawText);
 
   if (!pendingUpload.title) {
     if (!normalized) {
-      await ctx.reply(formatUploadTitlePrompt(pendingUpload.suggestedTitle ?? ""), {
-        reply_markup: createUploadTitleKeyboard(pendingUpload.suggestedTitle ?? ""),
+      await showPanel(ctx, musicService, {
+        parseMode: HTML_MODE,
+        replyMarkup: createUploadTitleKeyboard(pendingUpload.suggestedTitle ?? ""),
+        text: formatUploadTitlePrompt(pendingUpload.suggestedTitle ?? ""),
       });
       return;
     }
@@ -622,8 +770,10 @@ async function handlePendingUploadText(ctx, meta, rawText, pendingUpload, musicS
       ...meta,
       trackId: track.id,
     });
-    await ctx.reply(UPLOAD_DONE_PROMPT, {
-      reply_markup: createHomeKeyboard(),
+    await showPanel(ctx, musicService, {
+      parseMode: HTML_MODE,
+      replyMarkup: createHomeKeyboard(),
+      text: UPLOAD_DONE_PROMPT,
     });
     return;
   }
@@ -638,11 +788,80 @@ async function resetPendingState(musicService, userId) {
   await musicService.clearPendingUpload(userId);
 }
 
+async function showPanel(ctx, musicService, { text, replyMarkup, parseMode = HTML_MODE }) {
+  const meta = getContextMeta(ctx);
+  const currentMessageId = ctx.callbackQuery?.message?.message_id ?? null;
+
+  if (currentMessageId) {
+    try {
+      await ctx.editMessageText(text, {
+        parse_mode: parseMode,
+        reply_markup: replyMarkup,
+      });
+    } catch (error) {
+      if (!isMessageNotModifiedError(error)) {
+        throw error;
+      }
+    }
+
+    if (meta.userId && meta.chatId) {
+      await musicService.setUiPanel(meta.userId, {
+        chatId: meta.chatId,
+        messageId: currentMessageId,
+      });
+    }
+
+    return currentMessageId;
+  }
+
+  await clearPreviousPanel(ctx, musicService, meta);
+
+  const message = await ctx.reply(text, {
+    parse_mode: parseMode,
+    reply_markup: replyMarkup,
+  });
+
+  if (meta.userId && meta.chatId) {
+    await musicService.setUiPanel(meta.userId, {
+      chatId: meta.chatId,
+      messageId: message.message_id,
+    });
+  }
+
+  return message.message_id;
+}
+
+async function clearPreviousPanel(ctx, musicService, meta) {
+  if (!meta.userId || !meta.chatId) {
+    return;
+  }
+
+  const panel = await musicService.getUiPanel(meta.userId);
+
+  if (!panel || panel.chatId !== meta.chatId) {
+    return;
+  }
+
+  try {
+    await ctx.api.deleteMessage(panel.chatId, panel.messageId);
+  } catch {
+    // Ignore stale or already deleted panel messages.
+  }
+
+  await musicService.clearUiPanel(meta.userId);
+}
+
+function isMessageNotModifiedError(error) {
+  return String(error?.description ?? error?.message ?? "").includes("message is not modified");
+}
+
 function extractUploadFromMessage(message) {
   if (message?.audio) {
     return {
       fileId: message.audio.file_id,
       fileName: message.audio.file_name ?? "",
+      sizeBytes: Number(message.audio.file_size ?? 0),
+      durationSeconds: Number(message.audio.duration ?? 0),
       fileType: "audio",
       mimeType: message.audio.mime_type ?? "",
     };
@@ -652,6 +871,8 @@ function extractUploadFromMessage(message) {
     return {
       fileId: message.document.file_id,
       fileName: message.document.file_name ?? "",
+      sizeBytes: Number(message.document.file_size ?? 0),
+      durationSeconds: 0,
       fileType: "document",
       mimeType: message.document.mime_type ?? "",
     };
@@ -701,22 +922,37 @@ async function enrichTrack(track, musicService) {
 }
 
 async function sendStoredTrack(ctx, track, options = {}) {
-  const { includeFollowUp = true } = options;
-  const caption = formatTrackCaption(track);
+  const {
+    includeFollowUp = false,
+    logger = noopLogger,
+    musicService,
+    platformSettings = { feeBps: 300, feePercentLabel: "3%", starsHoldDays: 7, starsSupportAmounts: [10, 25, 50], withdrawMinStars: 100 },
+    viewerUserId = null,
+  } = options;
+  const supportLink = await createTrackAudioSupportLink(ctx, {
+    logger,
+    musicService,
+    platformSettings,
+    track,
+    viewerUserId,
+  });
+  const caption = formatTrackCaption(track, supportLink);
+  const commonOptions = {
+    caption,
+    parse_mode: "HTML",
+  };
 
   if (track.fileType === "document") {
-    await ctx.replyWithDocument(track.fileId, {
-      caption,
-    });
+    await ctx.replyWithDocument(track.fileId, commonOptions);
   } else {
-    await ctx.replyWithAudio(track.fileId, {
-      caption,
-    });
+    await ctx.replyWithAudio(track.fileId, commonOptions);
   }
 
   if (includeFollowUp) {
-    await ctx.reply(SENT_TRACK_PROMPT, {
-      reply_markup: createInfoKeyboard(),
+    await showPanel(ctx, musicService, {
+      parseMode: HTML_MODE,
+      replyMarkup: createInfoKeyboard(),
+      text: SENT_TRACK_PROMPT,
     });
   }
 }
@@ -731,9 +967,10 @@ async function openCabinetReply(ctx, musicService, logger, platformSettings) {
     trackCount: profile.trackCount,
   });
 
-  await ctx.reply(formatCabinetMessage(profile, platformSettings), {
-    parse_mode: "HTML",
-    reply_markup: createCabinetKeyboard(),
+  await showPanel(ctx, musicService, {
+    parseMode: HTML_MODE,
+    replyMarkup: createCabinetKeyboard(),
+    text: formatCabinetMessage(profile, platformSettings),
   });
 }
 
@@ -747,9 +984,10 @@ async function openCabinetEdit(ctx, musicService, logger, platformSettings) {
     trackCount: profile.trackCount,
   });
 
-  await ctx.editMessageText(formatCabinetMessage(profile, platformSettings), {
-    parse_mode: "HTML",
-    reply_markup: createCabinetKeyboard(),
+  await showPanel(ctx, musicService, {
+    parseMode: HTML_MODE,
+    replyMarkup: createCabinetKeyboard(),
+    text: formatCabinetMessage(profile, platformSettings),
   });
 }
 
@@ -785,40 +1023,90 @@ function createUploadTitleKeyboard(suggestedTitle) {
 }
 
 function createSearchResultsKeyboard(tracks) {
+  return createSearchResultsKeyboardPage(tracks, {
+    page: 0,
+    totalPages: 1,
+  });
+}
+
+function createSearchResultsKeyboardPage(tracks, pagination) {
   const keyboard = new InlineKeyboard();
 
   for (const track of tracks) {
     keyboard.text(formatTrackButton(track), `pick:${track.id}`).row();
   }
 
-  keyboard
-    .text(SEARCH_NEW_LABEL, "menu:search")
-    .row()
-    .text(CABINET_LABEL, "menu:cabinet");
+  if (pagination.totalPages > 1) {
+    const prevPage = Math.max(0, pagination.page - 1);
+    const nextPage = Math.min(pagination.totalPages - 1, pagination.page + 1);
+
+    keyboard
+      .text("◀️", `searchpage:${prevPage}`)
+      .text(`${pagination.page + 1}/${pagination.totalPages}`, "searchpage:stay")
+      .text("▶️", `searchpage:${nextPage}`);
+  }
 
   return keyboard;
 }
 
-function createSelectionKeyboard(track, viewerUserId) {
-  const keyboard = new InlineKeyboard();
-
-  if (track.supportsStars && track.uploaderUserId !== viewerUserId) {
-    keyboard.text("Поддержать в Stars", `donate:${track.id}`).row();
+async function createTrackAudioSupportLink(ctx, { logger, musicService, platformSettings, track, viewerUserId }) {
+  if (!track.supportsStars) {
+    return undefined;
   }
 
-  keyboard
-    .text(SEARCH_NEW_LABEL, "menu:search")
-    .row()
-    .text(CABINET_LABEL, "menu:cabinet");
+  const amountXtr = platformSettings.starsSupportAmounts[0] ?? 10;
 
-  return keyboard;
+  if (!musicService || !viewerUserId) {
+    return undefined;
+  }
+
+  try {
+    const intent = await musicService.createStarsSupportIntent({
+      amountXtr,
+      donorUserId: viewerUserId,
+      trackId: track.id,
+    });
+
+    if (!intent) {
+      return undefined;
+    }
+
+    const invoiceLink = await createStarsInvoiceLink(ctx, track, intent);
+
+    await logger.log("stars_invoice_link_created", {
+      ...getContextMeta(ctx),
+      amountXtr: intent.amountXtr,
+      payload: intent.payload,
+      trackId: track.id,
+    });
+
+    return invoiceLink;
+  } catch (error) {
+    await logger.log("stars_invoice_link_failed", {
+      ...getContextMeta(ctx),
+      error: serializeError(error),
+      trackId: track.id,
+    });
+
+    return undefined;
+  }
+}
+
+async function createStarsInvoiceLink(ctx, track, intent) {
+  return ctx.api.raw.createInvoiceLink({
+    currency: "XTR",
+    description: `${track.title} | ${track.uploaderName}`,
+    payload: intent.payload,
+    prices: [{ amount: intent.amountXtr, label: `${intent.amountXtr} XTR` }],
+    title: TRACK_SUPPORT_INVOICE_TITLE,
+  });
 }
 
 function createCabinetKeyboard() {
   return new InlineKeyboard()
     .text(TRACKS_LABEL, "cab:tracks")
     .row()
-    .text(BALANCE_LABEL, "cab:balance")
+    .text(WITHDRAW_LABEL, "cab:withdraw")
     .row()
     .text(BACK_LABEL, "menu:home");
 }
@@ -835,7 +1123,19 @@ function createCabinetTracksKeyboard(tracks) {
   return keyboard;
 }
 
-function createBalanceKeyboard() {
+function createWithdrawKeyboard(profile, platformSettings) {
+  const keyboard = new InlineKeyboard();
+
+  if (profile.starsAvailableXtr >= platformSettings.withdrawMinStars) {
+    keyboard.text(REQUEST_WITHDRAW_LABEL, "withdraw:request").row();
+  }
+
+  keyboard.text(BACK_LABEL, "menu:cabinet");
+
+  return keyboard;
+}
+
+function createWithdrawBackKeyboard() {
   return new InlineKeyboard()
     .text(BACK_LABEL, "menu:cabinet");
 }
@@ -859,6 +1159,39 @@ function createInfoKeyboard() {
     .text(CABINET_LABEL, "menu:cabinet");
 }
 
+async function renderSearchResultsPanel(ctx, musicService, userId, requestedPage) {
+  const session = userId ? await musicService.getSearchSession(userId) : null;
+
+  if (!session?.trackIds?.length) {
+    await showPanel(ctx, musicService, {
+      parseMode: HTML_MODE,
+      replyMarkup: createSearchPromptKeyboard(),
+      text: SEARCH_BUTTON_PROMPT,
+    });
+    return;
+  }
+
+  const totalPages = Math.max(1, Math.ceil(session.trackIds.length / SEARCH_PAGE_SIZE));
+  const safePage = Math.max(0, Math.min(requestedPage, totalPages - 1));
+  const pageTrackIds = session.trackIds.slice(safePage * SEARCH_PAGE_SIZE, (safePage + 1) * SEARCH_PAGE_SIZE);
+  const tracks = (await Promise.all(pageTrackIds.map((trackId) => musicService.lookupTrack(trackId))))
+    .filter(Boolean);
+
+  await musicService.setSearchSession(userId, {
+    ...session,
+    page: safePage,
+  });
+
+  await showPanel(ctx, musicService, {
+    parseMode: HTML_MODE,
+    replyMarkup: createSearchResultsKeyboardPage(tracks, {
+      page: safePage,
+      totalPages,
+    }),
+    text: SEARCH_RESULTS_PROMPT,
+  });
+}
+
 function shortenLabel(value, maxLength) {
   if (value.length <= maxLength) {
     return value;
@@ -873,7 +1206,9 @@ function emptyProfile() {
     starsAvailableXtr: 0,
     starsFrozenXtr: 0,
     starsPendingXtr: 0,
+    starsTotalXtr: 0,
     trackCount: 0,
+    supportPaymentsCount: 0,
   };
 }
 

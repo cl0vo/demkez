@@ -21,6 +21,23 @@ export function createSyntheticContext(update) {
 
   const ctx = {
     api: {
+      raw: {
+        async createInvoiceLink(invoice) {
+          actions.push({
+            invoice,
+            type: "create_invoice_link",
+          });
+
+          return `https://t.me/invoice/${invoice.payload}`;
+        },
+      },
+      async deleteMessage(chatId, messageId) {
+        actions.push({
+          chatId,
+          messageId,
+          type: "delete_message",
+        });
+      },
       async sendChatAction(chatId, action) {
         actions.push({
           action,
@@ -142,6 +159,11 @@ async function routeSyntheticUpdate(update, ctx, handlers) {
     return "command:paysupport";
   }
 
+  if (update.message?.text === "/rules") {
+    await handlers.handleRules(ctx);
+    return "command:rules";
+  }
+
   if (update.message?.successful_payment) {
     await handlers.handleSuccessfulPayment(ctx);
     return "message:successful_payment";
@@ -177,6 +199,18 @@ async function routeSyntheticUpdate(update, ctx, handlers) {
       return "callback:cabtrack";
     }
 
+    const searchPageMatch = /^searchpage:(stay|\d+)$/.exec(update.callback_query.data);
+
+    if (searchPageMatch) {
+      if (searchPageMatch[1] === "stay") {
+        await ctx.answerCallbackQuery();
+        return "callback:searchpage";
+      }
+
+      await handlers.handleSearchPageCallback(ctx, Number.parseInt(searchPageMatch[1], 10));
+      return "callback:searchpage";
+    }
+
     const starsPayMatch = /^starspay:(.+):(\d+)$/.exec(update.callback_query.data);
 
     if (starsPayMatch) {
@@ -206,11 +240,16 @@ async function routeSyntheticUpdate(update, ctx, handlers) {
       return "callback:menu";
     }
 
-    const cabinetMatch = /^cab:(tracks|balance)$/.exec(update.callback_query.data);
+    const cabinetMatch = /^cab:(tracks|withdraw)$/.exec(update.callback_query.data);
 
     if (cabinetMatch) {
       await handlers.handleCabinetCallback(ctx, cabinetMatch[1]);
       return "callback:cabinet";
+    }
+
+    if (update.callback_query.data === "withdraw:request") {
+      await handlers.handleWithdrawRequest(ctx);
+      return "callback:withdraw_request";
     }
 
     const donateMatch = /^donate:(.+)$/.exec(update.callback_query.data);
