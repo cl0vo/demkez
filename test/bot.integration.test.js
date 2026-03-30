@@ -6,6 +6,7 @@ import {
   START_PROMPT,
   TITLE_SUGGESTION_SAVED_PROMPT,
 } from "../src/messages.js";
+import { createStorageChannelQueue } from "../src/storage-channel-queue.js";
 import { dispatchSyntheticUpdate } from "../src/synthetic.js";
 
 const PLATFORM_SETTINGS = {
@@ -161,6 +162,72 @@ test("storage channel failure blocks upload publication and shows storage error"
   assert.equal(deps.state.tracks.length, 0);
 });
 
+test("concurrent uploads are queued before reposting to storage chat", async () => {
+  const copyCalls = [];
+  let activeCopies = 0;
+  let maxActiveCopies = 0;
+  const deps = createTestDeps({
+    state: {
+      supportIntents: [],
+      supportPayments: [],
+      tracks: [],
+      users: {
+        "21": { locale: "ru" },
+      },
+    },
+    storageChatId: -100777001,
+    storageChannelQueue: createStorageChannelQueue({
+      logger: {
+        async log() {},
+      },
+      maxRetries: 0,
+      minIntervalMs: 40,
+    }),
+    telegramApi: {
+      async copyMessage(chatId, fromChatId, messageId) {
+        activeCopies += 1;
+        maxActiveCopies = Math.max(maxActiveCopies, activeCopies);
+        copyCalls.push({
+          chatId,
+          fromChatId,
+          messageId,
+          startedAt: Date.now(),
+        });
+        await sleep(20);
+        activeCopies -= 1;
+        return { message_id: 9000 + messageId };
+      },
+    },
+  });
+
+  const [first, second] = await Promise.all([
+    dispatchSyntheticUpdate(createAudioUploadUpdate({
+      chatId: 10,
+      fileId: "audio-file-1",
+      messageId: 50,
+      updateId: 50,
+      userId: 20,
+      username: "tester",
+    }), deps),
+    dispatchSyntheticUpdate(createAudioUploadUpdate({
+      chatId: 11,
+      fileId: "audio-file-2",
+      messageId: 51,
+      updateId: 51,
+      userId: 21,
+      username: "tester2",
+    }), deps),
+  ]);
+
+  assert.equal(first.route, "message:upload");
+  assert.equal(second.route, "message:upload");
+  assert.equal(copyCalls.length, 2);
+  assert.equal(maxActiveCopies, 1);
+  assert.ok(copyCalls[1].startedAt - copyCalls[0].startedAt >= 35);
+  assert.equal(deps.state.users["20"].pendingUpload.sourceChatId, -100777001);
+  assert.equal(deps.state.users["21"].pendingUpload.sourceChatId, -100777001);
+});
+
 test("external search failure still returns local catalog matches", async () => {
   const deps = createTestDeps({
     previewSearchError: new Error("preview down"),
@@ -246,7 +313,144 @@ test("balance command opens stars balance directly", async () => {
 
   assert.equal(execution.route, "command:balance");
   assert.match(execution.actions[0].text, /^⭐ <b>Баланс<\/b>/);
+  assert.match(execution.actions[0].text, /⏳ В холде: <b>0 Stars<\/b>/);
   assert.match(execution.actions[0].text, /Вывод открывается от <b>100 Stars<\/b>/);
+});
+
+test("cabinet keeps withdrawal locked while Stars are only pending", async () => {
+  const deps = createTestDeps({
+    state: {
+      supportIntents: [],
+      supportPayments: [
+        {
+          amountXtr: 124,
+          authorShareXtr: 120,
+          authorUserId: 20,
+          paidAt: new Date().toISOString(),
+          releaseAt: new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString(),
+          status: "successful",
+          telegramPaymentChargeId: "pending-charge-1",
+        },
+      ],
+      tracks: [],
+      users: {},
+    },
+  });
+
+  const cabinet = await dispatchSyntheticUpdate(createTextUpdate("/my", 18), deps);
+
+  assert.equal(cabinet.route, "command:my");
+  assert.match(cabinet.actions[0].text, /⭐ Баланс: 120 Stars/);
+  assert.match(cabinet.actions[0].text, /💸 Вывод от 100 Stars/);
+  assert.doesNotMatch(cabinet.actions[0].text, /Вывод уже доступен/);
+
+  const request = await dispatchSyntheticUpdate(createCallbackUpdate("withdraw:request"), deps);
+
+  assert.equal(request.route, "callback:withdraw_request");
+  assert.match(request.actions[1].text, /^💸 <b>Вывод Stars<\/b>/);
+  assert.doesNotMatch(request.actions[1].text, /Заявка на вывод/);
+});
+
+test("balance sync imports missing Telegram Stars payment from transaction history", async () => {
+  const paidAtUnix = Math.floor((Date.now() - 8 * 24 * 60 * 60 * 1000) / 1000);
+  const deps = createTestDeps({
+    state: {
+      supportIntents: [
+        supportIntent({
+          amountXtr: 200,
+          authorShareXtr: 194,
+          authorUserId: 20,
+          donorUserId: 99,
+          payload: "stars:intent-1",
+          platformShareXtr: 6,
+          trackId: "track-1",
+        }),
+      ],
+      supportPayments: [],
+      tracks: [track("track-1", "My Demo", "@tester", 20)],
+      users: {},
+    },
+    telegramApi: {
+      async getMyStarBalance() {
+        return { amount: 200 };
+      },
+      async getStarTransactions() {
+        return {
+          transactions: [
+            createTelegramInvoiceTransaction({
+              amount: 200,
+              date: paidAtUnix,
+              id: "charge-1",
+              payload: "stars:intent-1",
+              userId: 99,
+            }),
+          ],
+        };
+      },
+    },
+  });
+
+  const execution = await dispatchSyntheticUpdate(createTextUpdate("/balance", 19), deps);
+
+  assert.equal(execution.route, "command:balance");
+  assert.equal(deps.state.supportPayments.length, 1);
+  assert.equal(deps.state.supportPayments[0].telegramPaymentChargeId, "charge-1");
+  assert.equal(deps.state.supportPayments[0].status, "successful");
+  assert.match(execution.actions[0].text, /К выводу доступно: <b>194 Stars<\/b>/);
+});
+
+test("balance sync marks refunded Telegram Stars transactions as refunded", async () => {
+  const deps = createTestDeps({
+    state: {
+      supportIntents: [
+        supportIntent({ donorUserId: 20, payload: "stars:intent-1", status: "paid" }),
+      ],
+      supportPayments: [
+        {
+          amountXtr: 100,
+          authorShareXtr: 97,
+          authorUserId: 44,
+          donorUserId: 20,
+          intentId: "intent-1",
+          payload: "stars:intent-1",
+          platformShareXtr: 3,
+          providerPaymentChargeId: "",
+          releaseAt: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
+          status: "successful",
+          telegramPaymentChargeId: "charge-1",
+          trackId: "track-1",
+          trackTitle: "My Demo",
+          uploaderName: "@tester",
+        },
+      ],
+      tracks: [track("track-1", "My Demo", "@tester", 44)],
+      users: {},
+    },
+    telegramApi: {
+      async getMyStarBalance() {
+        return { amount: 0 };
+      },
+      async getStarTransactions() {
+        return {
+          transactions: [
+            createTelegramRefundTransaction({
+              amount: 100,
+              date: Math.floor(Date.now() / 1000),
+              id: "charge-1",
+              payload: "stars:intent-1",
+              userId: 20,
+            }),
+          ],
+        };
+      },
+    },
+  });
+
+  const execution = await dispatchSyntheticUpdate(createTextUpdate("/balance", 20), deps);
+
+  assert.equal(execution.route, "command:balance");
+  assert.equal(deps.state.supportPayments[0].status, "refunded");
+  assert.match(execution.actions[0].text, /Сейчас у вас: <b>0 Stars<\/b>/);
 });
 
 test("rules command returns upload and balance rules", async () => {
@@ -329,14 +533,11 @@ test("search mixes local and external results with local tracks first", async ()
   const rows = execution.actions[1].options.reply_markup.inline_keyboard;
 
   assert.equal(execution.route, "message:text");
-  assert.equal(rows[0][0].text, "🎵 DemoHub");
-  assert.equal(rows[0][0].callback_data, "searchpage:stay");
-  assert.equal(rows[1][0].text, "Demo Local");
-  assert.equal(rows[1][0].callback_data, "searchpick:0");
-  assert.equal(rows[2][0].text, "🌐 Внешний каталог");
-  assert.equal(rows[2][0].callback_data, "searchpage:stay");
-  assert.match(rows[3][0].text, /Catalog Artist - Demo Outside/);
-  assert.equal(rows[3][0].callback_data, "searchpick:1");
+  assert.equal(rows[0][0].text, "🎵 Demo Local");
+  assert.equal(rows[0][0].callback_data, "searchpick:0");
+  assert.match(rows[1][0].text, /^🌐 /);
+  assert.match(rows[1][0].text, /Catalog Artist - Demo Outside/);
+  assert.equal(rows[1][0].callback_data, "searchpick:1");
 });
 
 test("mixed search keeps external result callback indexes after local results", async () => {
@@ -484,7 +685,7 @@ test("cabinet tracks renders as track buttons with back button", async () => {
   assert.equal(execution.actions[1].text, "🎵 <b>Мои треки</b>");
   assert.deepEqual(
     execution.actions[1].options.reply_markup.inline_keyboard.map((row) => row.map((button) => button.text)),
-    [["My Demo", "✏️"], ["Second Demo", "✏️"], ["← Назад"]],
+    [["My Demo", "✎︎"], ["Second Demo", "✎︎"], ["← Назад"]],
   );
   assert.equal(
     execution.actions[1].options.reply_markup.inline_keyboard[0][0].callback_data,
@@ -728,6 +929,50 @@ test("successful stars payment updates internal balance", async () => {
   assert.match(execution.actions[0].text, /На баланс владельца зачислено: <b>\+97 Stars<\/b>/);
   assert.equal(deps.state.supportPayments.length, 1);
   assert.equal(deps.state.supportPayments[0].authorShareXtr, 97);
+  assert.equal(deps.state.supportPayments[0].status, "successful");
+  const profile = await deps.musicService.getUserProfile(44);
+  assert.equal(profile.starsPendingXtr, 97);
+  assert.equal(profile.starsAvailableXtr, 0);
+  assert.equal(profile.starsTotalXtr, 97);
+});
+
+test("refunded stars payment removes credited amount from internal balance", async () => {
+  const deps = createTestDeps({
+    state: {
+      supportIntents: [
+        supportIntent({ donorUserId: 20, payload: "stars:intent-1", status: "paid" }),
+      ],
+      supportPayments: [
+        {
+          amountXtr: 100,
+          authorShareXtr: 97,
+          authorUserId: 44,
+          donorUserId: 20,
+          intentId: "intent-1",
+          payload: "stars:intent-1",
+          platformShareXtr: 3,
+          providerPaymentChargeId: "",
+          releaseAt: new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString(),
+          status: "successful",
+          telegramPaymentChargeId: "charge-1",
+          trackId: "track-1",
+          trackTitle: "My Demo",
+          uploaderName: "@tester",
+        },
+      ],
+      tracks: [track("track-1", "My Demo", "@tester", 44)],
+      users: {},
+    },
+  });
+
+  const execution = await dispatchSyntheticUpdate(createRefundedPaymentUpdate("stars:intent-1", 100, "charge-1"), deps);
+
+  assert.equal(execution.route, "message:refunded_payment");
+  assert.equal(deps.state.supportPayments[0].status, "refunded");
+  const profile = await deps.musicService.getUserProfile(44);
+  assert.equal(profile.starsPendingXtr, 0);
+  assert.equal(profile.starsAvailableXtr, 0);
+  assert.equal(profile.starsTotalXtr, 0);
 });
 
 test("withdraw request opens support instructions when stars threshold is reached", async () => {
@@ -771,6 +1016,8 @@ function createTestDeps({
   previewSearchError = null,
   previewResults = [],
   storageChatId = null,
+  storageChannelQueue = undefined,
+  telegramApi = {},
   state = { supportIntents: [], supportPayments: [], tracks: [], users: {} },
 } = {}) {
   const events = [];
@@ -810,6 +1057,8 @@ function createTestDeps({
       },
     },
     state,
+    storageChannelQueue,
+    telegramApi,
   };
 }
 
@@ -889,6 +1138,91 @@ function createMemoryCatalog(state) {
       state.supportPayments.unshift(payment);
       intent.status = "paid";
       return payment;
+    },
+    async refundStarsSupportPayment({ payload, providerPaymentChargeId, telegramPaymentChargeId, totalAmountXtr }) {
+      const payment = state.supportPayments.find((entry) => entry.telegramPaymentChargeId === telegramPaymentChargeId);
+
+      if (!payment || payment.amountXtr !== totalAmountXtr) {
+        return null;
+      }
+
+      payment.status = "refunded";
+      payment.refundedAt = new Date().toISOString();
+      payment.refundedAmountXtr = Number(totalAmountXtr);
+      payment.refundPayload = payload ?? "";
+      payment.refundProviderPaymentChargeId = providerPaymentChargeId ?? "";
+
+      const intent = state.supportIntents.find((entry) => entry.id === payment.intentId || entry.payload === payload);
+
+      if (intent) {
+        intent.status = "refunded";
+        intent.refundedAt = payment.refundedAt;
+      }
+
+      return payment;
+    },
+    async syncTelegramStarsTransactions(transactions = []) {
+      let importedPayments = 0;
+      let refundedPayments = 0;
+      let skippedTransactions = 0;
+
+      for (const transaction of transactions) {
+        const payload = transaction?.source?.type === "user" && transaction.source.transaction_type === "invoice_payment"
+          ? transaction.source.invoice_payload ?? ""
+          : "";
+
+        if (payload.startsWith("stars:")) {
+          const existing = state.supportPayments.find((entry) => entry.telegramPaymentChargeId === transaction.id);
+          const intent = state.supportIntents.find((entry) => entry.payload === payload);
+          const amountXtr = Math.abs(Number(transaction.amount ?? 0));
+
+          if (!existing && intent && amountXtr === Number(intent.amountXtr)) {
+            const paidAt = new Date(Number(transaction.date) * 1000);
+
+            state.supportPayments.unshift({
+              amountXtr,
+              authorShareXtr: intent.authorShareXtr,
+              authorUserId: intent.authorUserId,
+              donorUserId: intent.donorUserId,
+              intentId: intent.id,
+              paidAt: paidAt.toISOString(),
+              payload,
+              platformShareXtr: intent.platformShareXtr,
+              providerPaymentChargeId: "",
+              releaseAt: new Date(paidAt.getTime() + PLATFORM_SETTINGS.starsHoldDays * 24 * 60 * 60 * 1000).toISOString(),
+              status: "successful",
+              telegramPaymentChargeId: transaction.id,
+              trackId: intent.trackId,
+              trackTitle: intent.trackTitle,
+              uploaderName: intent.uploaderName,
+            });
+            intent.status = "paid";
+            intent.paidAt = paidAt.toISOString();
+            importedPayments += 1;
+            continue;
+          }
+        }
+
+        if (transaction?.receiver) {
+          const payment = state.supportPayments.find((entry) => entry.telegramPaymentChargeId === transaction.id);
+
+          if (payment && payment.status !== "refunded") {
+            payment.status = "refunded";
+            payment.refundedAt = new Date(Number(transaction.date) * 1000).toISOString();
+            payment.refundedAmountXtr = Math.abs(Number(transaction.amount ?? payment.amountXtr));
+            refundedPayments += 1;
+            continue;
+          }
+        }
+
+        skippedTransactions += 1;
+      }
+
+      return {
+        importedPayments,
+        refundedPayments,
+        skippedTransactions,
+      };
     },
     async finalizePendingUpload(userId) {
       const pending = state.users[String(userId)]?.pendingUpload;
@@ -1036,24 +1370,33 @@ function createTextUpdate(text, updateId) {
   };
 }
 
-function createAudioUploadUpdate({ fileSize = 5 * 1024 * 1024 } = {}) {
+function createAudioUploadUpdate({
+  chatId = 10,
+  fileId = "audio-file-1",
+  fileName = "travis_scott-fein.mp3",
+  fileSize = 5 * 1024 * 1024,
+  messageId = 50,
+  updateId = 50,
+  userId = 20,
+  username = "tester",
+} = {}) {
   return {
     message: {
       audio: {
         duration: 10,
-        file_id: "audio-file-1",
-        file_name: "travis_scott-fein.mp3",
+        file_id: fileId,
+        file_name: fileName,
         file_size: fileSize,
         mime_type: "audio/mpeg",
         performer: "Travis Scott",
         title: "FE!N",
       },
-      chat: { id: 10, type: "private" },
+      chat: { id: chatId, type: "private" },
       date: 0,
-      from: { first_name: "Test", id: 20, is_bot: false, username: "tester" },
-      message_id: 50,
+      from: { first_name: "Test", id: userId, is_bot: false, username },
+      message_id: messageId,
     },
-    update_id: 50,
+    update_id: updateId,
   };
 }
 
@@ -1135,6 +1478,25 @@ function createSuccessfulPaymentUpdate(payload, amount) {
   };
 }
 
+function createRefundedPaymentUpdate(payload, amount, chargeId) {
+  return {
+    message: {
+      chat: { id: 10, type: "private" },
+      date: 0,
+      from: { first_name: "Test", id: 20, is_bot: false, username: "tester" },
+      message_id: 72,
+      refunded_payment: {
+        currency: "XTR",
+        invoice_payload: payload,
+        provider_payment_charge_id: "",
+        telegram_payment_charge_id: chargeId,
+        total_amount: amount,
+      },
+    },
+    update_id: 72,
+  };
+}
+
 function track(id, title, uploaderName, uploaderUserId = 20, durationSeconds = 0, overrides = {}) {
   return {
     createdAt: new Date().toISOString(),
@@ -1171,6 +1533,7 @@ function supportIntent({
   donorUserId = 20,
   payload,
   platformShareXtr = 3,
+  status = "created",
   trackId = "track-1",
   trackTitle = "My Demo",
   uploaderName = "@tester",
@@ -1185,9 +1548,49 @@ function supportIntent({
     id: "intent-1",
     payload,
     platformShareXtr,
-    status: "created",
+    status,
     trackId,
     trackTitle,
     uploaderName,
   };
+}
+
+function createTelegramInvoiceTransaction({ amount, date, id, payload, userId }) {
+  return {
+    amount,
+    date,
+    id,
+    source: {
+      invoice_payload: payload,
+      transaction_type: "invoice_payment",
+      type: "user",
+      user: {
+        first_name: "Test",
+        id: userId,
+        is_bot: false,
+      },
+    },
+  };
+}
+
+function createTelegramRefundTransaction({ amount, date, id, payload, userId }) {
+  return {
+    amount,
+    date,
+    id,
+    receiver: {
+      invoice_payload: payload,
+      transaction_type: "invoice_payment",
+      type: "user",
+      user: {
+        first_name: "Test",
+        id: userId,
+        is_bot: false,
+      },
+    },
+  };
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

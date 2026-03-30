@@ -45,6 +45,19 @@ test("formatTrackButton keeps artist and title readable", () => {
   assert.ok(label.length <= 55);
 });
 
+test("formatTrackButton supports compact markers and custom width", () => {
+  const label = formatTrackButton({
+    durationSeconds: 221,
+    title: "PHAOAH feat. Boulevard Depo - 5 минут назад",
+  }, {
+    marker: "🎵",
+    maxLength: 24,
+  });
+
+  assert.match(label, /^🎵 03:41 /);
+  assert.ok(label.length <= 24);
+});
+
 test("formatSelectionMessage escapes html and shows stars support", () => {
   const message = formatSelectionMessage({
     title: "<Thunderstruck>",
@@ -110,8 +123,22 @@ test("cabinet and stars messages stay minimal", () => {
   assert.doesNotMatch(cabinet, /В ожидании:/);
   assert.match(balance, /Сейчас у вас: <b>20 Stars<\/b>/);
   assert.match(balance, /К выводу доступно: <b>12 Stars<\/b>/);
+  assert.match(balance, /В холде: <b>5 Stars<\/b>/);
+  assert.match(balance, /Заморожено: <b>3 Stars<\/b>/);
   assert.match(support, /на внутренний баланс владельца трека/);
+  assert.match(withdraw, /В холде: <b>5 Stars<\/b>/);
   assert.match(withdraw, /До вывода осталось: <b>88 Stars<\/b>/);
+});
+
+test("cabinet readiness is based on available Stars, not total Stars", () => {
+  const cabinet = formatCabinetMessage(
+    { starsAvailableXtr: 12, starsFrozenXtr: 0, starsPendingXtr: 110, starsTotalXtr: 122, supportPaymentsCount: 2, trackCount: 1 },
+    { feeBps: 300, feePercentLabel: "3%", starsHoldDays: 7, withdrawMinStars: 100 },
+  );
+
+  assert.match(cabinet, /⭐ Баланс: 122 Stars/);
+  assert.match(cabinet, /💸 Вывод от 100 Stars/);
+  assert.doesNotMatch(cabinet, /Вывод уже доступен/);
 });
 
 test("pay support message prefers configured handle", () => {

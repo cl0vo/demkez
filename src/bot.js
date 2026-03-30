@@ -35,6 +35,10 @@ export function createBot({ token, musicService, previewSearchService, logger, p
     await handlers.handleSuccessfulPayment(ctx);
   });
 
+  bot.on("message:refunded_payment", async (ctx) => {
+    await handlers.handleRefundedPayment(ctx);
+  });
+
   bot.preCheckoutQuery(/^stars:/, async (ctx) => {
     await handlers.handlePreCheckout(ctx);
   });

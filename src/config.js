@@ -17,12 +17,16 @@ export function getPlatformSettings() {
   const uploadMaxMb = Number.parseInt(process.env.UPLOAD_MAX_MB ?? "25", 10) || 25;
   const uploadDailyLimit = Number.parseInt(process.env.UPLOAD_DAILY_LIMIT ?? "20", 10) || 20;
   const withdrawMinStars = Number.parseInt(process.env.WITHDRAW_MIN_STARS ?? "100", 10) || 100;
+  const storageCopyMaxRetries = Number.parseInt(process.env.STORAGE_COPY_MAX_RETRIES ?? "3", 10) || 3;
+  const storageCopyMinIntervalMs = Number.parseInt(process.env.STORAGE_COPY_MIN_INTERVAL_MS ?? "1250", 10) || 1250;
 
   return {
     feeBps: 300,
     feePercentLabel: "3%",
     paySupportHandle: process.env.PAY_SUPPORT_HANDLE?.trim() ?? "",
     storageChatId: normalizeChatId(process.env.STORAGE_CHAT_ID),
+    storageCopyMaxRetries,
+    storageCopyMinIntervalMs,
     starsHoldDays: Number.parseInt(process.env.STARS_HOLD_DAYS ?? "7", 10) || 7,
     starsSupportAmounts: supportAmounts.length > 0 ? supportAmounts : [10, 25, 50],
     uploadDailyLimit,

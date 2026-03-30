@@ -2,7 +2,7 @@ import { createHandlers } from "./handlers.js";
 
 export async function dispatchSyntheticUpdate(update, deps) {
   const handlers = createHandlers(deps);
-  const { actions, ctx } = createSyntheticContext(update);
+  const { actions, ctx } = createSyntheticContext(update, deps);
   const route = await routeSyntheticUpdate(update, ctx, handlers);
 
   return {
@@ -11,18 +11,24 @@ export async function dispatchSyntheticUpdate(update, deps) {
   };
 }
 
-export function createSyntheticContext(update) {
+export function createSyntheticContext(update, deps = {}) {
   const actions = [];
   const message = update.message ?? null;
   const callbackQuery = update.callback_query ?? null;
   const preCheckoutQuery = update.pre_checkout_query ?? null;
   const chat = message?.chat ?? callbackQuery?.message?.chat ?? preCheckoutQuery?.from ?? null;
   const from = message?.from ?? callbackQuery?.from ?? preCheckoutQuery?.from ?? null;
+  const telegramApi = deps.telegramApi ?? {};
+  const rawApi = telegramApi.raw ?? {};
 
   const ctx = {
     api: {
       raw: {
         async createInvoiceLink(invoice) {
+          if (typeof rawApi.createInvoiceLink === "function") {
+            return rawApi.createInvoiceLink(invoice);
+          }
+
           actions.push({
             invoice,
             type: "create_invoice_link",
@@ -31,7 +37,25 @@ export function createSyntheticContext(update) {
           return `https://t.me/invoice/${invoice.payload}`;
         },
       },
+      async getMyStarBalance() {
+        if (typeof telegramApi.getMyStarBalance === "function") {
+          return telegramApi.getMyStarBalance();
+        }
+
+        return { amount: 0 };
+      },
+      async getStarTransactions(options = {}) {
+        if (typeof telegramApi.getStarTransactions === "function") {
+          return telegramApi.getStarTransactions(options);
+        }
+
+        return { transactions: [] };
+      },
       async deleteMessage(chatId, messageId) {
+        if (typeof telegramApi.deleteMessage === "function") {
+          return telegramApi.deleteMessage(chatId, messageId);
+        }
+
         actions.push({
           chatId,
           messageId,
@@ -39,6 +63,10 @@ export function createSyntheticContext(update) {
         });
       },
       async copyMessage(chatId, fromChatId, messageId, options = {}) {
+        if (typeof telegramApi.copyMessage === "function") {
+          return telegramApi.copyMessage(chatId, fromChatId, messageId, options);
+        }
+
         if (chatId === "broken-storage-chat" || chatId === -999001) {
           const error = new Error("Call to 'copyMessage' failed! (400: Bad Request: chat not found)");
           error.name = "GrammyError";
@@ -58,6 +86,10 @@ export function createSyntheticContext(update) {
         };
       },
       async sendChatAction(chatId, action) {
+        if (typeof telegramApi.sendChatAction === "function") {
+          return telegramApi.sendChatAction(chatId, action);
+        }
+
         actions.push({
           action,
           chatId,
@@ -197,6 +229,11 @@ async function routeSyntheticUpdate(update, ctx, handlers) {
   if (update.message?.successful_payment) {
     await handlers.handleSuccessfulPayment(ctx);
     return "message:successful_payment";
+  }
+
+  if (update.message?.refunded_payment) {
+    await handlers.handleRefundedPayment(ctx);
+    return "message:refunded_payment";
   }
 
   if (update.pre_checkout_query) {

@@ -10,6 +10,7 @@ import hi from "./locales/hi.js";
 import ja from "./locales/ja.js";
 
 const MAX_BUTTON_TEXT = 55;
+const DEFAULT_TRACK_MARKER = "";
 const COPY = { ru, en, de, fr, es, it, pt, zh, hi, ja };
 
 export const DEFAULT_LOCALE = "ru";
@@ -98,12 +99,15 @@ export function normalizeQuery(text) {
   return String(text).replace(/\s+/g, " ").trim();
 }
 
-export function formatTrackButton(track) {
+export function formatTrackButton(track, options = {}) {
+  const marker = String(options.marker ?? DEFAULT_TRACK_MARKER).trim();
+  const maxLength = Number.isInteger(options.maxLength) ? options.maxLength : MAX_BUTTON_TEXT;
   const duration = formatDuration(track.durationSeconds);
   const hiddenMarker = track.catalogVisible === false ? "🙈 " : "";
   const baseTitle = `${hiddenMarker}${track.title}`;
   const label = duration ? `${duration} ${baseTitle}` : baseTitle;
-  return trimToLength(label, MAX_BUTTON_TEXT);
+  const markedLabel = marker ? `${marker} ${label}` : label;
+  return trimToLength(markedLabel, maxLength);
 }
 
 export function formatExternalSearchResultButton(result) {
@@ -229,7 +233,7 @@ export function formatCabinetMessage(profile, platformSettings, locale = DEFAULT
     "",
     getText(locale, "CABINET_TRACKS", { count: profile.trackCount }),
     getText(locale, "CABINET_BALANCE", { count: profile.starsTotalXtr }),
-    profile.starsTotalXtr >= platformSettings.withdrawMinStars
+    profile.starsAvailableXtr >= platformSettings.withdrawMinStars
       ? getText(locale, "CABINET_WITHDRAW_READY")
       : getText(locale, "CABINET_WITHDRAW_MIN", { count: platformSettings.withdrawMinStars }),
   ].join("\n");
@@ -241,6 +245,8 @@ export function formatStarsBalanceMessage(profile, platformSettings, locale = DE
     "",
     getText(locale, "BALANCE_TOTAL", { count: profile.starsTotalXtr }),
     getText(locale, "BALANCE_AVAILABLE", { count: profile.starsAvailableXtr }),
+    getText(locale, "BALANCE_PENDING", { count: profile.starsPendingXtr }),
+    getText(locale, "BALANCE_FROZEN", { count: profile.starsFrozenXtr }),
     "",
     getText(locale, "BALANCE_MIN", { count: platformSettings.withdrawMinStars }),
   ].join("\n");
@@ -253,6 +259,8 @@ export function formatWithdrawMessage(profile, platformSettings, locale = DEFAUL
     getText(locale, "WITHDRAW_PROMPT"),
     "",
     getText(locale, "WITHDRAW_AVAILABLE", { count: profile.starsAvailableXtr }),
+    getText(locale, "BALANCE_PENDING", { count: profile.starsPendingXtr }),
+    getText(locale, "BALANCE_FROZEN", { count: profile.starsFrozenXtr }),
     getText(locale, "WITHDRAW_MIN", { count: platformSettings.withdrawMinStars }),
     "",
     profile.starsAvailableXtr >= platformSettings.withdrawMinStars

@@ -397,6 +397,52 @@ export function createCatalogService({ dbPath = DB_PATH, feeBps = 300, starsHold
       });
     },
 
+    async refundStarsSupportPayment({
+      payload,
+      providerPaymentChargeId,
+      telegramPaymentChargeId,
+      totalAmountXtr,
+    }) {
+      return mutateDb(async (db) => {
+        const payment = db.supportPayments.find((entry) => entry.telegramPaymentChargeId === telegramPaymentChargeId);
+
+        if (!payment) {
+          return null;
+        }
+
+        if (payment.status === "refunded") {
+          return payment;
+        }
+
+        if (Number(totalAmountXtr) !== Number(payment.amountXtr)) {
+          return null;
+        }
+
+        const refundedAt = new Date().toISOString();
+        payment.refundedAt = refundedAt;
+        payment.refundedAmountXtr = Number(totalAmountXtr);
+        payment.refundPayload = payload ?? "";
+        payment.refundProviderPaymentChargeId = providerPaymentChargeId ?? "";
+        payment.status = "refunded";
+
+        const intent = db.supportIntents.find((entry) => entry.id === payment.intentId || entry.payload === payload);
+
+        if (intent) {
+          intent.refundedAt = refundedAt;
+          intent.status = "refunded";
+        }
+
+        return payment;
+      });
+    },
+
+    async syncTelegramStarsTransactions(transactions = []) {
+      return mutateDb(async (db) => reconcileTelegramStarsTransactions(db, transactions, {
+        feeBps,
+        starsHoldDays,
+      }));
+    },
+
     async searchTracks(query, limit = 5) {
       const normalizedQuery = normalizeText(query);
       const db = await readDb(dbPath);
@@ -485,6 +531,164 @@ function scoreTrack(track, query) {
 function calculateAuthorShare(amountXtr, feeBps) {
   const gross = Number.parseInt(String(amountXtr), 10) || 0;
   return Math.max(0, Math.floor((gross * (10000 - feeBps)) / 10000));
+}
+
+function reconcileTelegramStarsTransactions(db, transactions, { feeBps, starsHoldDays }) {
+  const summary = {
+    importedPayments: 0,
+    refundedPayments: 0,
+    skippedTransactions: 0,
+  };
+
+  for (const transaction of Array.isArray(transactions) ? transactions : []) {
+    if (syncIncomingTelegramStarsPayment(db, transaction, { feeBps, starsHoldDays })) {
+      summary.importedPayments += 1;
+      continue;
+    }
+
+    if (syncOutgoingTelegramStarsRefund(db, transaction)) {
+      summary.refundedPayments += 1;
+      continue;
+    }
+
+    summary.skippedTransactions += 1;
+  }
+
+  return summary;
+}
+
+function syncIncomingTelegramStarsPayment(db, transaction, { feeBps, starsHoldDays }) {
+  const payload = getTelegramInvoicePayload(transaction?.source);
+
+  if (!payload || !payload.startsWith("stars:")) {
+    return false;
+  }
+
+  const telegramPaymentChargeId = String(transaction?.id ?? "").trim();
+
+  if (!telegramPaymentChargeId) {
+    return false;
+  }
+
+  if (db.supportPayments.some((payment) => payment.telegramPaymentChargeId === telegramPaymentChargeId)) {
+    return false;
+  }
+
+  const intent = db.supportIntents.find((entry) => entry.payload === payload);
+
+  if (!intent) {
+    return false;
+  }
+
+  const amountXtr = getTelegramStarsAmount(transaction);
+
+  if (amountXtr <= 0 || Number(intent.amountXtr) !== amountXtr) {
+    return false;
+  }
+
+  const donorUserId = Number(transaction?.source?.user?.id);
+
+  if (Number.isInteger(intent.donorUserId) && Number.isInteger(donorUserId) && intent.donorUserId !== donorUserId) {
+    return false;
+  }
+
+  const paidAt = parseStarTransactionDate(transaction?.date);
+
+  if (!paidAt) {
+    return false;
+  }
+
+  const paidAtIso = paidAt.toISOString();
+  const releaseAt = new Date(paidAt.getTime() + starsHoldDays * 24 * 60 * 60 * 1000);
+  const authorShareXtr = Number(intent.authorShareXtr ?? calculateAuthorShare(amountXtr, feeBps));
+  const payment = {
+    amountXtr,
+    authorShareXtr,
+    authorUserId: intent.authorUserId,
+    donorUserId: Number.isInteger(donorUserId) ? donorUserId : Number(intent.donorUserId),
+    id: randomUUID(),
+    intentId: intent.id,
+    paidAt: paidAtIso,
+    payload,
+    platformShareXtr: Number(intent.platformShareXtr ?? (amountXtr - authorShareXtr)),
+    providerPaymentChargeId: "",
+    releaseAt: releaseAt.toISOString(),
+    status: "successful",
+    telegramPaymentChargeId,
+    trackId: intent.trackId,
+    trackTitle: intent.trackTitle,
+    uploaderName: intent.uploaderName,
+  };
+
+  intent.status = "paid";
+  intent.paidAt = paidAtIso;
+  intent.precheckedAt ??= paidAtIso;
+  db.supportPayments.unshift(payment);
+
+  return true;
+}
+
+function syncOutgoingTelegramStarsRefund(db, transaction) {
+  if (!transaction?.receiver) {
+    return false;
+  }
+
+  const telegramPaymentChargeId = String(transaction?.id ?? "").trim();
+
+  if (!telegramPaymentChargeId) {
+    return false;
+  }
+
+  const payment = db.supportPayments.find((entry) => entry.telegramPaymentChargeId === telegramPaymentChargeId);
+
+  if (!payment || payment.status === "refunded") {
+    return false;
+  }
+
+  const refundedAt = parseStarTransactionDate(transaction?.date)?.toISOString() ?? new Date().toISOString();
+  const refundPayload = getTelegramInvoicePayload(transaction.receiver) || payment.payload;
+
+  payment.refundedAt = refundedAt;
+  payment.refundedAmountXtr = getTelegramStarsAmount(transaction) || Number(payment.amountXtr);
+  payment.refundPayload = refundPayload;
+  payment.refundProviderPaymentChargeId = "";
+  payment.status = "refunded";
+
+  const intent = db.supportIntents.find((entry) => (
+    entry.id === payment.intentId
+    || entry.payload === payment.payload
+    || entry.payload === refundPayload
+  ));
+
+  if (intent) {
+    intent.refundedAt = refundedAt;
+    intent.status = "refunded";
+  }
+
+  return true;
+}
+
+function getTelegramInvoicePayload(partner) {
+  if (partner?.type !== "user" || partner.transaction_type !== "invoice_payment") {
+    return "";
+  }
+
+  return String(partner.invoice_payload ?? "").trim();
+}
+
+function getTelegramStarsAmount(transaction) {
+  return Math.abs(Number.parseInt(String(transaction?.amount ?? 0), 10) || 0);
+}
+
+function parseStarTransactionDate(unixTime) {
+  const seconds = Number.parseInt(String(unixTime ?? ""), 10);
+
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    return null;
+  }
+
+  const date = new Date(seconds * 1000);
+  return Number.isNaN(date.getTime()) ? null : date;
 }
 
 function deriveCreatorStarsLedger(db, userId, now) {

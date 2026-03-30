@@ -49,11 +49,15 @@ import {
 } from "./messages.js";
 import { noopLogger, serializeError } from "./logger.js";
 import { noopReplayStore } from "./replay-store.js";
+import { createStorageChannelQueue } from "./storage-channel-queue.js";
 
 const HTML_MODE = "HTML";
 const SEARCH_PAGE_SIZE = 8;
 const SEARCH_MAX_PAGES = 7;
 const SEARCH_RESULT_LIMIT = SEARCH_PAGE_SIZE * SEARCH_MAX_PAGES;
+const STARS_SYNC_COOLDOWN_MS = 60_000;
+const STARS_SYNC_PAGE_SIZE = 100;
+const STARS_SYNC_MAX_PAGES = 5;
 
 export function createHandlers({
   musicService,
@@ -61,7 +65,71 @@ export function createHandlers({
   logger = noopLogger,
   platformSettings = { feeBps: 300, feePercentLabel: "3%", starsHoldDays: 7, starsSupportAmounts: [10, 25, 50], withdrawMinStars: 100 },
   replayStore = noopReplayStore,
+  storageChannelQueue = createStorageChannelQueue({
+    logger,
+    maxRetries: platformSettings.storageCopyMaxRetries,
+    minIntervalMs: platformSettings.storageCopyMinIntervalMs,
+  }),
 }) {
+  let lastTelegramStarsSyncAt = 0;
+  let telegramStarsSyncTask = null;
+
+  async function syncTelegramStarsLedger(ctx) {
+    if (typeof musicService.syncTelegramStarsTransactions !== "function" || typeof ctx?.api?.getStarTransactions !== "function") {
+      return null;
+    }
+
+    const now = Date.now();
+
+    if (telegramStarsSyncTask) {
+      return telegramStarsSyncTask;
+    }
+
+    if (now - lastTelegramStarsSyncAt < STARS_SYNC_COOLDOWN_MS) {
+      return null;
+    }
+
+    telegramStarsSyncTask = (async () => {
+      try {
+        const [{ transactions, truncated }, telegramBalance] = await Promise.all([
+          loadTelegramStarsTransactions(ctx.api),
+          typeof ctx.api.getMyStarBalance === "function" ? ctx.api.getMyStarBalance() : Promise.resolve(null),
+        ]);
+        const summary = await musicService.syncTelegramStarsTransactions(transactions);
+
+        lastTelegramStarsSyncAt = Date.now();
+        await logger.log("stars_ledger_synced", {
+          importedPayments: summary?.importedPayments ?? 0,
+          refundedPayments: summary?.refundedPayments ?? 0,
+          skippedTransactions: summary?.skippedTransactions ?? 0,
+          telegramBalanceXtr: telegramBalance?.amount ?? null,
+          telegramTransactions: transactions.length,
+          truncated,
+        });
+
+        return summary;
+      } catch (error) {
+        await logger.log("stars_ledger_sync_failed", {
+          error: serializeError(error),
+        });
+        return null;
+      } finally {
+        telegramStarsSyncTask = null;
+      }
+    })();
+
+    return telegramStarsSyncTask;
+  }
+
+  async function getFreshProfile(ctx, userId) {
+    if (!userId) {
+      return emptyProfile();
+    }
+
+    await syncTelegramStarsLedger(ctx);
+    return musicService.getUserProfile(userId);
+  }
+
   return {
     async handleStart(ctx) {
       const meta = getContextMeta(ctx);
@@ -125,7 +193,8 @@ export function createHandlers({
       }
 
       await resetPendingState(musicService, meta.userId);
-      await openCabinetReply(ctx, musicService, logger, platformSettings, locale);
+      const profile = await getFreshProfile(ctx, meta.userId);
+      await openCabinetReply(ctx, musicService, logger, platformSettings, locale, profile);
     },
 
     async handleBalance(ctx) {
@@ -136,7 +205,7 @@ export function createHandlers({
         return;
       }
 
-      const profile = meta.userId ? await musicService.getUserProfile(meta.userId) : emptyProfile();
+      const profile = await getFreshProfile(ctx, meta.userId);
 
       await logger.log("balance_requested", {
         ...meta,
@@ -383,7 +452,7 @@ export function createHandlers({
       let storedUpload = upload;
 
       try {
-        storedUpload = await storeUploadSourceMessage(ctx, upload, platformSettings);
+        storedUpload = await storeUploadSourceMessage(ctx, upload, platformSettings, storageChannelQueue);
       } catch (error) {
         const replayPath = await replayStore.capture("upload_storage_failed", {
           context: {
@@ -984,7 +1053,8 @@ export function createHandlers({
       }
 
       if (action === "cabinet") {
-        await openCabinetEdit(ctx, musicService, logger, platformSettings, locale);
+        const profile = await getFreshProfile(ctx, meta.userId);
+        await openCabinetEdit(ctx, musicService, logger, platformSettings, locale, profile);
       }
     },
 
@@ -995,8 +1065,6 @@ export function createHandlers({
       if (!locale) {
         return;
       }
-
-      const profile = meta.userId ? await musicService.getUserProfile(meta.userId) : emptyProfile();
 
       await ctx.answerCallbackQuery();
       await musicService.clearPendingAction(meta.userId);
@@ -1014,6 +1082,7 @@ export function createHandlers({
       }
 
       if (action === "withdraw") {
+        const profile = await getFreshProfile(ctx, meta.userId);
         await showPanel(ctx, musicService, {
           parseMode: HTML_MODE,
           replyMarkup: createWithdrawKeyboard(profile, platformSettings, locale),
@@ -1056,6 +1125,22 @@ export function createHandlers({
       }
 
       await ctx.answerCallbackQuery();
+
+      const profile = await getFreshProfile(ctx, meta.userId);
+
+      if (profile.starsAvailableXtr < platformSettings.withdrawMinStars) {
+        await logger.log("withdraw_request_blocked", {
+          ...meta,
+          starsAvailableXtr: profile.starsAvailableXtr,
+        });
+        await showPanel(ctx, musicService, {
+          parseMode: HTML_MODE,
+          replyMarkup: createWithdrawKeyboard(profile, platformSettings, locale),
+          text: formatWithdrawMessage(profile, platformSettings, locale),
+        });
+        return;
+      }
+
       await showPanel(ctx, musicService, {
         parseMode: HTML_MODE,
         replyMarkup: createWithdrawBackKeyboard(locale),
@@ -1201,6 +1286,42 @@ export function createHandlers({
         parseMode: HTML_MODE,
         replyMarkup: createInfoKeyboard(locale),
         text: formatStarsPaymentSuccessMessage(savedPayment, locale),
+      });
+    },
+
+    async handleRefundedPayment(ctx) {
+      const meta = getContextMeta(ctx);
+      const payment = ctx.message?.refunded_payment;
+
+      if (!payment) {
+        return;
+      }
+
+      const savedPayment = await musicService.refundStarsSupportPayment({
+        payload: payment.invoice_payload,
+        providerPaymentChargeId: payment.provider_payment_charge_id,
+        telegramPaymentChargeId: payment.telegram_payment_charge_id,
+        totalAmountXtr: payment.total_amount,
+      });
+
+      if (!savedPayment) {
+        await logger.log("stars_payment_refund_ignored", {
+          ...meta,
+          payload: payment.invoice_payload,
+          telegramPaymentChargeId: payment.telegram_payment_charge_id,
+          totalAmountXtr: payment.total_amount,
+        });
+        return;
+      }
+
+      await logger.log("stars_payment_refunded", {
+        ...meta,
+        amountXtr: savedPayment.amountXtr,
+        authorShareXtr: savedPayment.authorShareXtr,
+        payload: payment.invoice_payload,
+        platformShareXtr: savedPayment.platformShareXtr,
+        telegramPaymentChargeId: payment.telegram_payment_charge_id,
+        trackId: savedPayment.trackId,
       });
     },
   };
@@ -1495,16 +1616,23 @@ function getUploaderName(ctx) {
     : [ctx.from?.first_name, ctx.from?.last_name].filter(Boolean).join(" ").trim() || "Unknown";
 }
 
-async function storeUploadSourceMessage(ctx, upload, platformSettings = {}) {
+async function storeUploadSourceMessage(ctx, upload, platformSettings = {}, storageChannelQueue = null) {
   if (!platformSettings.storageChatId || !upload.sourceChatId || !upload.sourceMessageId) {
     return upload;
   }
 
-  const copiedMessage = await ctx.api.copyMessage(
+  const copyTask = () => ctx.api.copyMessage(
     platformSettings.storageChatId,
     upload.sourceChatId,
     upload.sourceMessageId,
   );
+  const copiedMessage = storageChannelQueue
+    ? await storageChannelQueue.schedule(copyTask, {
+      sourceChatId: upload.sourceChatId,
+      sourceMessageId: upload.sourceMessageId,
+      storageChatId: platformSettings.storageChatId,
+    })
+    : await copyTask();
 
   return {
     ...upload,
@@ -1595,37 +1723,37 @@ async function sendStoredTrack(ctx, track, options = {}) {
   }
 }
 
-async function openCabinetReply(ctx, musicService, logger, platformSettings, locale = DEFAULT_LOCALE) {
+async function openCabinetReply(ctx, musicService, logger, platformSettings, locale = DEFAULT_LOCALE, profile = null) {
   const meta = getContextMeta(ctx);
-  const profile = meta.userId ? await musicService.getUserProfile(meta.userId) : emptyProfile();
+  const resolvedProfile = profile ?? (meta.userId ? await musicService.getUserProfile(meta.userId) : emptyProfile());
 
   await logger.log("cabinet_requested", {
     ...meta,
-    starsAvailableXtr: profile.starsAvailableXtr,
-    trackCount: profile.trackCount,
+    starsAvailableXtr: resolvedProfile.starsAvailableXtr,
+    trackCount: resolvedProfile.trackCount,
   });
 
   await showPanel(ctx, musicService, {
     parseMode: HTML_MODE,
     replyMarkup: createCabinetKeyboard(locale),
-    text: formatCabinetMessage(profile, platformSettings, locale),
+    text: formatCabinetMessage(resolvedProfile, platformSettings, locale),
   });
 }
 
-async function openCabinetEdit(ctx, musicService, logger, platformSettings, locale = DEFAULT_LOCALE) {
+async function openCabinetEdit(ctx, musicService, logger, platformSettings, locale = DEFAULT_LOCALE, profile = null) {
   const meta = getContextMeta(ctx);
-  const profile = meta.userId ? await musicService.getUserProfile(meta.userId) : emptyProfile();
+  const resolvedProfile = profile ?? (meta.userId ? await musicService.getUserProfile(meta.userId) : emptyProfile());
 
   await logger.log("cabinet_requested", {
     ...meta,
-    starsAvailableXtr: profile.starsAvailableXtr,
-    trackCount: profile.trackCount,
+    starsAvailableXtr: resolvedProfile.starsAvailableXtr,
+    trackCount: resolvedProfile.trackCount,
   });
 
   await showPanel(ctx, musicService, {
     parseMode: HTML_MODE,
     replyMarkup: createCabinetKeyboard(locale),
-    text: formatCabinetMessage(profile, platformSettings, locale),
+    text: formatCabinetMessage(resolvedProfile, platformSettings, locale),
   });
 }
 
@@ -1688,17 +1816,14 @@ function createSearchResultsKeyboard(results, locale = DEFAULT_LOCALE, options =
   }, locale, options);
 }
 
-function createSearchResultsKeyboardPage(results, pagination, locale = DEFAULT_LOCALE, { showSectionHeaders = false } = {}) {
+function createSearchResultsKeyboardPage(results, pagination, locale = DEFAULT_LOCALE, { showTypeMarkers = false } = {}) {
   const keyboard = new InlineKeyboard();
-  let lastRenderedType = null;
 
   for (const result of results) {
-    if (showSectionHeaders && result.type !== lastRenderedType) {
-      keyboard.text(getSearchSectionLabel(result.type, locale), "searchpage:stay").row();
-      lastRenderedType = result.type;
-    }
-
-    keyboard.text(formatSearchResultButton(result), `searchpick:${result.sessionIndex}`).row();
+    keyboard.text(
+      formatSearchResultButton(result, { showTypeMarkers }),
+      `searchpick:${result.sessionIndex}`,
+    ).row();
   }
 
   if (pagination.totalPages > 1) {
@@ -1784,7 +1909,7 @@ function createCabinetTracksKeyboard(tracks, locale = DEFAULT_LOCALE) {
 
   for (const track of tracks) {
     keyboard
-      .text(formatTrackButton(track), `cabtrack:${track.id}`)
+      .text(formatTrackButton(track, { maxLength: 42 }), `cabtrack:${track.id}`)
       .text(getText(locale, "EDIT_TRACK_LABEL"), `cabedit:${track.id}`)
       .row();
   }
@@ -1798,6 +1923,35 @@ function createTrackRenameKeyboard(locale = DEFAULT_LOCALE) {
   const labels = getUiLabels(locale);
   return new InlineKeyboard()
     .text(labels.back, "cab:tracks");
+}
+
+async function loadTelegramStarsTransactions(api) {
+  const transactions = [];
+  let offset = 0;
+
+  for (let page = 0; page < STARS_SYNC_MAX_PAGES; page += 1) {
+    const response = await api.getStarTransactions({
+      limit: STARS_SYNC_PAGE_SIZE,
+      offset,
+    });
+    const batch = Array.isArray(response?.transactions) ? response.transactions : [];
+
+    transactions.push(...batch);
+
+    if (batch.length < STARS_SYNC_PAGE_SIZE) {
+      return {
+        transactions,
+        truncated: false,
+      };
+    }
+
+    offset += batch.length;
+  }
+
+  return {
+    transactions,
+    truncated: true,
+  };
 }
 
 function createWithdrawKeyboard(profile, platformSettings, locale = DEFAULT_LOCALE) {
@@ -1890,7 +2044,7 @@ async function renderSearchResultsPanel(ctx, musicService, userId, requestedPage
 
   const totalPages = Math.max(1, Math.ceil(session.results.length / SEARCH_PAGE_SIZE));
   const safePage = Math.max(0, Math.min(requestedPage, totalPages - 1));
-  const showSectionHeaders = hasMixedSearchResultKinds(session.results);
+  const showTypeMarkers = hasMixedSearchResultKinds(session.results);
   const pageResults = session.results
     .slice(safePage * SEARCH_PAGE_SIZE, (safePage + 1) * SEARCH_PAGE_SIZE)
     .map((result, index) => ({
@@ -1910,18 +2064,20 @@ async function renderSearchResultsPanel(ctx, musicService, userId, requestedPage
       page: safePage,
       totalPages,
     }, locale, {
-      showSectionHeaders,
+      showTypeMarkers,
     }),
     text: getText(locale, "SEARCH_RESULTS_PROMPT"),
   });
 }
 
-function formatSearchResultButton(result) {
+function formatSearchResultButton(result, { showTypeMarkers = false } = {}) {
   if (result.type === "external") {
     return formatExternalSearchResultButton(result);
   }
 
-  return formatTrackButton(result);
+  return formatTrackButton(result, {
+    marker: showTypeMarkers ? "🎵" : "",
+  });
 }
 
 function toStoredSearchResult(track) {
@@ -1975,20 +2131,6 @@ function normalizePendingUploadState(pendingUpload) {
     suggestedTitle: String(pendingUpload?.suggestedTitle ?? "").trim(),
     title: String(pendingUpload?.title ?? "").trim(),
   };
-}
-
-function getSearchSectionLabel(type, locale = DEFAULT_LOCALE) {
-  const safeLocale = normalizeLocale(locale) ?? DEFAULT_LOCALE;
-
-  if (type === "local") {
-    return "🎵 DemoHub";
-  }
-
-  if (safeLocale === "ru") {
-    return "🌐 Внешний каталог";
-  }
-
-  return "🌐 External Catalog";
 }
 
 function emptyProfile() {
