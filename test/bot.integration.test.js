@@ -12,6 +12,7 @@ const PLATFORM_SETTINGS = {
   feeBps: 300,
   feePercentLabel: "3%",
   paySupportHandle: "@demohub_support",
+  storageChatId: null,
   starsHoldDays: 7,
   starsSupportAmounts: [10, 25, 50],
   uploadDailyLimit: 20,
@@ -54,9 +55,14 @@ test("upload prompt includes suggested title and quick-pick button", async () =>
   assert.equal(execution.route, "message:upload");
   assert.match(execution.actions[0].text, /Например: <code>Travis Scott - FE!N<\/code>/);
   assert.match(execution.actions[0].text, /<b>Подсказка:<\/b> Travis Scott - FE!N/);
+  assert.match(execution.actions[0].text, /трек будет в поиске/);
   assert.equal(
     execution.actions[0].options.reply_markup.inline_keyboard[0][0].callback_data,
     "upload:title:use",
+  );
+  assert.equal(
+    execution.actions[0].options.reply_markup.inline_keyboard[1][0].callback_data,
+    "upload:visibility:toggle",
   );
 });
 
@@ -93,6 +99,129 @@ test("suggested title callback publishes track immediately", async () => {
   assert.equal(execution.route, "callback:upload_title");
   assert.equal(execution.actions[1].text, TITLE_SUGGESTION_SAVED_PROMPT);
   assert.equal(deps.state.tracks.length, 1);
+});
+
+test("upload copies mp3 to storage chat before saving pending upload", async () => {
+  const deps = createTestDeps({ storageChatId: -100555000111 });
+
+  const execution = await dispatchSyntheticUpdate(createAudioUploadUpdate(), deps);
+
+  assert.equal(execution.route, "message:upload");
+  assert.equal(execution.actions[0].type, "copy_message");
+  assert.equal(execution.actions[0].chatId, -100555000111);
+  assert.equal(deps.state.users["20"].pendingUpload.sourceChatId, -100555000111);
+  assert.equal(deps.state.users["20"].pendingUpload.sourceMessageId, 5001);
+});
+
+test("finalized upload keeps storage chat message as canonical track source", async () => {
+  const deps = createTestDeps({ storageChatId: -100555000111 });
+
+  await dispatchSyntheticUpdate(createAudioUploadUpdate(), deps);
+  await dispatchSyntheticUpdate(createCallbackUpdate("upload:title:use"), deps);
+
+  assert.equal(deps.state.tracks.length, 1);
+  assert.equal(deps.state.tracks[0].sourceChatId, -100555000111);
+  assert.equal(deps.state.tracks[0].sourceMessageId, 5001);
+});
+
+test("hidden upload stays in my tracks but does not appear in catalog search", async () => {
+  const deps = createTestDeps();
+
+  await dispatchSyntheticUpdate(createAudioUploadUpdate(), deps);
+  const visibilityToggle = await dispatchSyntheticUpdate(createCallbackUpdate("upload:visibility:toggle"), deps);
+
+  assert.equal(visibilityToggle.route, "callback:upload_visibility");
+  assert.equal(deps.state.users["20"].pendingUpload.catalogVisible, false);
+  assert.match(visibilityToggle.actions[1].text, /трек не будет в поиске/);
+
+  await dispatchSyntheticUpdate(createCallbackUpdate("upload:title:use"), deps);
+
+  assert.equal(deps.state.tracks.length, 1);
+  assert.equal(deps.state.tracks[0].catalogVisible, false);
+
+  const search = await dispatchSyntheticUpdate(createTextUpdate("FE!N", 209), deps);
+  const searchText = search.actions.filter((action) => typeof action.text === "string").slice(-1)[0];
+  assert.equal(search.route, "message:text");
+  assert.equal(searchText?.text, "Ничего не нашлось.\nПопробуйте другой запрос.");
+
+  const cabinetTracks = await dispatchSyntheticUpdate(createCallbackUpdate("cab:tracks"), deps);
+  assert.equal(cabinetTracks.route, "callback:cabinet");
+  assert.match(cabinetTracks.actions[1].options.reply_markup.inline_keyboard[0][0].text, /^🙈 /);
+});
+
+test("storage channel failure blocks upload publication and shows storage error", async () => {
+  const deps = createTestDeps({ storageChatId: -999001 });
+
+  const execution = await dispatchSyntheticUpdate(createAudioUploadUpdate(), deps);
+  const textAction = execution.actions.filter((action) => typeof action.text === "string").slice(-1)[0];
+
+  assert.equal(execution.route, "message:upload");
+  assert.match(textAction?.text, /технический каталог DemoHub/);
+  assert.equal(deps.state.users["20"]?.pendingUpload, undefined);
+  assert.equal(deps.state.tracks.length, 0);
+});
+
+test("external search failure still returns local catalog matches", async () => {
+  const deps = createTestDeps({
+    previewSearchError: new Error("preview down"),
+    state: {
+      supportIntents: [],
+      supportPayments: [],
+      tracks: [track("track-1", "My Demo", "@tester")],
+      users: {},
+    },
+  });
+
+  const execution = await dispatchSyntheticUpdate(createTextUpdate("demo", 210), deps);
+
+  assert.equal(execution.route, "message:text");
+  assert.equal(execution.actions[1].text, SEARCH_RESULTS_PROMPT);
+  assert.equal(execution.actions[1].options.reply_markup.inline_keyboard[0][0].text, "My Demo");
+});
+
+test("manual upload title makes track searchable and openable end to end", async () => {
+  const deps = createTestDeps();
+
+  await dispatchSyntheticUpdate(createAudioUploadUpdate(), deps);
+  const publish = await dispatchSyntheticUpdate(createTextUpdate("Travis Scott - FE!N", 211), deps);
+
+  assert.equal(publish.route, "message:text");
+  assert.equal(deps.state.tracks.length, 1);
+  assert.equal(deps.state.tracks[0].title, "Travis Scott - FE!N");
+
+  const search = await dispatchSyntheticUpdate(createTextUpdate("FE!N", 212), deps);
+  const searchPanel = search.actions.filter((action) => action.options?.reply_markup).slice(-1)[0];
+  assert.equal(search.route, "message:text");
+  assert.equal(searchPanel?.options.reply_markup.inline_keyboard[0][0].callback_data, "searchpick:0");
+
+  const open = await dispatchSyntheticUpdate(createSearchPickUpdate(0), deps);
+  assert.equal(open.route, "callback:searchpick");
+  assert.deepEqual(
+    open.actions.map((action) => action.type),
+    ["answer_callback_query", "create_invoice_link", "copy_message", "edit_message_text"],
+  );
+});
+
+test("caption upload can be hidden and published through upload panel", async () => {
+  const deps = createTestDeps();
+
+  const upload = await dispatchSyntheticUpdate(createAudioUploadWithCaptionUpdate("Secret Demo"), deps);
+  const uploadPanel = upload.actions.filter((action) => typeof action.text === "string").slice(-1)[0];
+
+  assert.equal(upload.route, "message:upload");
+  assert.match(uploadPanel?.text, /Текущее название:.*Secret Demo/);
+  assert.match(uploadPanel?.text, /трек будет в поиске/);
+
+  const hidden = await dispatchSyntheticUpdate(createCallbackUpdate("upload:visibility:toggle"), deps);
+  const hiddenPanel = hidden.actions.filter((action) => typeof action.text === "string").slice(-1)[0];
+  assert.equal(hidden.route, "callback:upload_visibility");
+  assert.match(hiddenPanel?.text, /трек не будет в поиске/);
+
+  const publish = await dispatchSyntheticUpdate(createCallbackUpdate("upload:publish"), deps);
+  assert.equal(publish.route, "callback:upload_publish");
+  assert.equal(deps.state.tracks.length, 1);
+  assert.equal(deps.state.tracks[0].catalogVisible, false);
+  assert.equal(deps.state.tracks[0].title, "Secret Demo");
 });
 
 test("cabinet opens with stars balance entry", async () => {
@@ -183,6 +312,54 @@ test("search falls back to external preview results when local catalog is empty"
   assert.equal(execution.actions[1].options.reply_markup.inline_keyboard[0][0].callback_data, "searchpick:0");
 });
 
+test("search mixes local and external results with local tracks first", async () => {
+  const deps = createTestDeps({
+    previewResults: [
+      externalTrack("itunes:1", "Demo Outside", "Catalog Artist", 191, "https://music.example/track-1"),
+    ],
+    state: {
+      supportIntents: [],
+      supportPayments: [],
+      tracks: [track("track-1", "Demo Local", "@tester")],
+      users: {},
+    },
+  });
+
+  const execution = await dispatchSyntheticUpdate(createTextUpdate("demo", 64), deps);
+  const rows = execution.actions[1].options.reply_markup.inline_keyboard;
+
+  assert.equal(execution.route, "message:text");
+  assert.equal(rows[0][0].text, "🎵 DemoHub");
+  assert.equal(rows[0][0].callback_data, "searchpage:stay");
+  assert.equal(rows[1][0].text, "Demo Local");
+  assert.equal(rows[1][0].callback_data, "searchpick:0");
+  assert.equal(rows[2][0].text, "🌐 Внешний каталог");
+  assert.equal(rows[2][0].callback_data, "searchpage:stay");
+  assert.match(rows[3][0].text, /Catalog Artist - Demo Outside/);
+  assert.equal(rows[3][0].callback_data, "searchpick:1");
+});
+
+test("mixed search keeps external result callback indexes after local results", async () => {
+  const deps = createTestDeps({
+    previewResults: [
+      externalTrack("itunes:1", "Demo Outside", "Catalog Artist", 191, "https://music.example/track-1"),
+    ],
+    state: {
+      supportIntents: [],
+      supportPayments: [],
+      tracks: [track("track-1", "Demo Local", "@tester")],
+      users: {},
+    },
+  });
+
+  await dispatchSyntheticUpdate(createTextUpdate("demo", 65), deps);
+  const execution = await dispatchSyntheticUpdate(createSearchPickUpdate(1), deps);
+
+  assert.equal(execution.route, "callback:searchpick");
+  assert.match(execution.actions[1].text, /ещё не загружен в DemoHub/);
+  assert.match(execution.actions[1].text, /Catalog Artist/);
+});
+
 test("external search result opens placeholder card and upload action", async () => {
   const deps = createTestDeps({
     previewResults: [
@@ -244,6 +421,37 @@ test("search paginates long result lists", async () => {
   assert.deepEqual(
     nextPage.actions[1].options.reply_markup.inline_keyboard.slice(-1)[0].map((button) => button.text),
     ["◀️", "2/2", "▶️"],
+  );
+});
+
+test("external search supports up to seven pages of results", async () => {
+  const deps = createTestDeps({
+    previewResults: Array.from({ length: 56 }, (_, index) => (
+      externalTrack(
+        `itunes:${index + 1}`,
+        `Demo Track ${index + 1}`,
+        "Catalog Artist",
+        180 + index,
+        `https://music.example/track-${index + 1}`,
+      )
+    )),
+  });
+
+  const search = await dispatchSyntheticUpdate(createTextUpdate("catalog", 208), deps);
+
+  assert.equal(search.route, "message:text");
+  assert.deepEqual(
+    search.actions[1].options.reply_markup.inline_keyboard.slice(-1)[0].map((button) => button.text),
+    ["◀️", "1/7", "▶️"],
+  );
+
+  const lastPage = await dispatchSyntheticUpdate(createCallbackUpdate("searchpage:6"), deps);
+
+  assert.equal(lastPage.route, "callback:searchpage");
+  assert.equal(lastPage.actions[1].text, SEARCH_RESULTS_PROMPT);
+  assert.deepEqual(
+    lastPage.actions[1].options.reply_markup.inline_keyboard.slice(-1)[0].map((button) => button.text),
+    ["◀️", "7/7", "▶️"],
   );
 });
 
@@ -349,6 +557,30 @@ test("broken stored track is deleted from catalog after telegram send failure", 
   const textAction = execution.actions.find((action) => action.text);
 
   assert.equal(execution.route, "callback:cabtrack");
+  assert.match(textAction?.text, /удалён из DemoHub/);
+  assert.equal(deps.state.tracks.length, 0);
+});
+
+test("broken stored track is deleted from search results after telegram send failure", async () => {
+  const deps = createTestDeps({
+    state: {
+      supportIntents: [],
+      supportPayments: [],
+      tracks: [track("track-1", "Broken Demo", "@tester")],
+      users: {},
+    },
+  });
+
+  deps.musicService.lookupTrack = async () => ({
+    ...deps.state.tracks[0],
+    fileId: "broken-file-id",
+  });
+
+  await dispatchSyntheticUpdate(createTextUpdate("broken", 207), deps);
+  const execution = await dispatchSyntheticUpdate(createSearchPickUpdate(0), deps);
+  const textAction = execution.actions.find((action) => action.text);
+
+  assert.equal(execution.route, "callback:searchpick");
   assert.match(textAction?.text, /удалён из DemoHub/);
   assert.equal(deps.state.tracks.length, 0);
 });
@@ -536,7 +768,9 @@ test("withdraw request opens support instructions when stars threshold is reache
 
 function createTestDeps({
   autoLocale = true,
+  previewSearchError = null,
   previewResults = [],
+  storageChatId = null,
   state = { supportIntents: [], supportPayments: [], tracks: [], users: {} },
 } = {}) {
   const events = [];
@@ -559,10 +793,17 @@ function createTestDeps({
     musicService: createMemoryCatalog(state),
     previewSearchService: {
       async searchTracks() {
+        if (previewSearchError) {
+          throw previewSearchError;
+        }
+
         return previewResults;
       },
     },
-    platformSettings: PLATFORM_SETTINGS,
+    platformSettings: {
+      ...PLATFORM_SETTINGS,
+      storageChatId,
+    },
     replayStore: {
       async capture() {
         return ".runtime/replays/test.json";
@@ -657,6 +898,7 @@ function createMemoryCatalog(state) {
       }
 
       const savedTrack = {
+        catalogVisible: pending.catalogVisible !== false,
         createdAt: new Date().toISOString(),
         fileId: pending.fileId,
         fileType: pending.fileType,
@@ -719,6 +961,10 @@ function createMemoryCatalog(state) {
       state.users[String(userId)].pendingUpload.title = title;
       return state.users[String(userId)].pendingUpload;
     },
+    async savePendingCatalogVisibility(userId, catalogVisible) {
+      state.users[String(userId)].pendingUpload.catalogVisible = catalogVisible !== false;
+      return state.users[String(userId)].pendingUpload;
+    },
     async updateTrackTitle(userId, trackId, title) {
       const trackEntry = state.tracks.find((entry) => entry.id === trackId && entry.uploaderUserId === Number(userId));
 
@@ -750,7 +996,9 @@ function createMemoryCatalog(state) {
     },
     async searchTracks(query, limit = 5) {
       const normalized = query.toLowerCase();
-      return state.tracks.filter((trackEntry) => trackEntry.title.toLowerCase().includes(normalized)).slice(0, limit);
+      return state.tracks
+        .filter((trackEntry) => trackEntry.catalogVisible !== false && trackEntry.title.toLowerCase().includes(normalized))
+        .slice(0, limit);
     },
     async setSearchSession(userId, session) {
       state.users[String(userId)] ??= {};
@@ -807,6 +1055,14 @@ function createAudioUploadUpdate({ fileSize = 5 * 1024 * 1024 } = {}) {
     },
     update_id: 50,
   };
+}
+
+function createAudioUploadWithCaptionUpdate(caption, { fileSize = 5 * 1024 * 1024 } = {}) {
+  const update = createAudioUploadUpdate({ fileSize });
+  update.message.caption = caption;
+  update.update_id = 51;
+  update.message.message_id = 51;
+  return update;
 }
 
 function createPickUpdate(trackId) {

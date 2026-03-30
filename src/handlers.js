@@ -52,7 +52,8 @@ import { noopReplayStore } from "./replay-store.js";
 
 const HTML_MODE = "HTML";
 const SEARCH_PAGE_SIZE = 8;
-const SEARCH_RESULT_LIMIT = 96;
+const SEARCH_MAX_PAGES = 7;
+const SEARCH_RESULT_LIMIT = SEARCH_PAGE_SIZE * SEARCH_MAX_PAGES;
 
 export function createHandlers({
   musicService,
@@ -242,17 +243,31 @@ export function createHandlers({
         }
 
         const tracks = await musicService.searchTracks(query, SEARCH_RESULT_LIMIT);
-        let results = tracks.map((track) => toStoredSearchResult(track));
-
-        if (results.length === 0) {
-          const externalResults = await previewSearchService.searchTracks(query, Math.min(SEARCH_RESULT_LIMIT, SEARCH_PAGE_SIZE * 2));
-          results = externalResults.map((track) => ({
+        const { error: externalSearchError, results: externalResults } = await loadExternalSearchResults(
+          previewSearchService,
+          query,
+        );
+        const results = [
+          ...tracks.map((track) => toStoredSearchResult(track)),
+          ...externalResults.map((track) => ({
             ...track,
             type: "external",
-          }));
+          })),
+        ].slice(0, SEARCH_RESULT_LIMIT);
+
+        if (externalSearchError && results.length > 0) {
+          await logger.log("search_external_failed_partial", {
+            ...meta,
+            query,
+            error: serializeError(externalSearchError),
+          });
         }
 
         if (results.length === 0) {
+          if (externalSearchError) {
+            throw externalSearchError;
+          }
+
           await logger.log("search_empty", {
             ...meta,
             query,
@@ -365,39 +380,59 @@ export function createHandlers({
         return;
       }
 
+      let storedUpload = upload;
+
+      try {
+        storedUpload = await storeUploadSourceMessage(ctx, upload, platformSettings);
+      } catch (error) {
+        const replayPath = await replayStore.capture("upload_storage_failed", {
+          context: {
+            ...meta,
+            fileType: upload.fileType,
+            sizeBytes: upload.sizeBytes,
+          },
+          error,
+          update: ctx.update,
+        });
+
+        await logger.log("upload_storage_failed", {
+          ...meta,
+          error: serializeError(error),
+          replayPath,
+          storageChatId: platformSettings.storageChatId ?? null,
+        });
+
+        await showPanel(ctx, musicService, {
+          parseMode: HTML_MODE,
+          replyMarkup: createUploadPromptKeyboard(locale),
+          text: getText(locale, "UPLOAD_STORAGE_ERROR_PROMPT"),
+        });
+        return;
+      }
+
+      if (storedUpload.sourceChatId !== upload.sourceChatId || storedUpload.sourceMessageId !== upload.sourceMessageId) {
+        await logger.log("upload_stored_in_channel", {
+          ...meta,
+          storageChatId: storedUpload.sourceChatId,
+          storageMessageId: storedUpload.sourceMessageId,
+        });
+      }
+
       await musicService.beginUpload({
-        ...upload,
+        ...storedUpload,
+        catalogVisible: true,
         suggestedTitle,
         title: titleFromCaption || "",
         userId: meta.userId,
         uploaderName: getUploaderName(ctx),
         uploaderUsername: ctx.from?.username ?? "",
       });
-
-      if (titleFromCaption) {
-        await logger.log("upload_title_saved", {
-          ...meta,
-          title: titleFromCaption,
-        });
-        const track = await musicService.finalizePendingUpload(meta.userId);
-        await logger.log("upload_completed", {
-          ...meta,
-          trackId: track?.id ?? null,
-          via: "caption",
-        });
-        await showPanel(ctx, musicService, {
-          parseMode: HTML_MODE,
-          replyMarkup: createHomeKeyboard(locale),
-          text: getText(locale, "UPLOAD_DONE_PROMPT"),
-        });
-        await musicService.clearPendingAction(meta.userId);
-        return;
-      }
+      const pendingUpload = await musicService.getPendingUpload(meta.userId);
 
       await showPanel(ctx, musicService, {
         parseMode: HTML_MODE,
-        replyMarkup: createUploadTitleKeyboard(suggestedTitle, locale),
-        text: formatUploadTitlePrompt(suggestedTitle, locale),
+        replyMarkup: createUploadTitleKeyboard(pendingUpload, locale),
+        text: formatUploadTitlePrompt(pendingUpload, locale),
       });
       await musicService.clearPendingAction(meta.userId);
     },
@@ -416,6 +451,7 @@ export function createHandlers({
       });
 
       await ctx.answerCallbackQuery();
+      let track = null;
 
       try {
         const result = await getSearchSessionResult(musicService, meta.userId, resultIndex);
@@ -447,7 +483,7 @@ export function createHandlers({
           return;
         }
 
-        const track = await enrichTrack(await musicService.lookupTrack(result.trackId), musicService);
+        track = await enrichTrack(await musicService.lookupTrack(result.trackId), musicService);
 
         if (!track) {
           await logger.log("selection_missing", {
@@ -806,6 +842,84 @@ export function createHandlers({
       });
     },
 
+    async handlePublishUpload(ctx) {
+      const meta = getContextMeta(ctx);
+      const locale = await requireLocale(ctx, musicService, meta.userId);
+
+      if (!locale) {
+        return;
+      }
+
+      await ctx.answerCallbackQuery();
+      const pendingUpload = meta.userId ? await musicService.getPendingUpload(meta.userId) : null;
+
+      if (!pendingUpload?.title) {
+        await showPanel(ctx, musicService, {
+          parseMode: HTML_MODE,
+          replyMarkup: createUploadTitleKeyboard(pendingUpload, locale),
+          text: formatUploadTitlePrompt(pendingUpload, locale),
+        });
+        return;
+      }
+
+      await logger.log("upload_title_saved", {
+        ...meta,
+        title: pendingUpload.title,
+        via: "publish_existing",
+      });
+
+      const track = await musicService.finalizePendingUpload(meta.userId);
+      await logger.log("upload_completed", {
+        ...meta,
+        catalogVisible: track?.catalogVisible !== false,
+        trackId: track?.id ?? null,
+        via: "publish_existing",
+      });
+      await musicService.clearPendingAction(meta.userId);
+      await showPanel(ctx, musicService, {
+        parseMode: HTML_MODE,
+        replyMarkup: createHomeKeyboard(locale),
+        text: getText(locale, "UPLOAD_DONE_PROMPT"),
+      });
+    },
+
+    async handleUploadVisibilityToggle(ctx) {
+      const meta = getContextMeta(ctx);
+      const locale = await requireLocale(ctx, musicService, meta.userId);
+
+      if (!locale) {
+        return;
+      }
+
+      await ctx.answerCallbackQuery();
+      const pendingUpload = meta.userId ? await musicService.getPendingUpload(meta.userId) : null;
+
+      if (!pendingUpload) {
+        await showPanel(ctx, musicService, {
+          parseMode: HTML_MODE,
+          replyMarkup: createUploadPromptKeyboard(locale),
+          text: getText(locale, "UPLOAD_MENU_PROMPT"),
+        });
+        return;
+      }
+
+      const updatedPendingUpload = await musicService.savePendingCatalogVisibility(
+        meta.userId,
+        pendingUpload.catalogVisible === false,
+      );
+
+      await logger.log("upload_catalog_visibility_changed", {
+        ...meta,
+        catalogVisible: updatedPendingUpload?.catalogVisible !== false,
+      });
+
+      await showPanel(ctx, musicService, {
+        parseMode: HTML_MODE,
+        replyMarkup: createUploadTitleKeyboard(updatedPendingUpload, locale),
+        text: formatUploadTitlePrompt(updatedPendingUpload, locale),
+      });
+    },
+
     async handleSkipDonation(ctx) {
       const meta = getContextMeta(ctx);
       const locale = await getLocaleOrDefault(musicService, meta.userId);
@@ -1119,42 +1233,40 @@ function isRulesCommandText(text) {
 async function handlePendingUploadText(ctx, meta, rawText, pendingUpload, musicService, logger, locale = DEFAULT_LOCALE) {
   const normalized = normalizeQuery(rawText);
 
-  if (!pendingUpload.title) {
-    if (!normalized) {
-      await showPanel(ctx, musicService, {
-        parseMode: HTML_MODE,
-        replyMarkup: createUploadTitleKeyboard(pendingUpload.suggestedTitle ?? "", locale),
-        text: formatUploadTitlePrompt(pendingUpload.suggestedTitle ?? "", locale),
-      });
-      return;
-    }
-
-    await musicService.savePendingTitle(meta.userId, normalized);
-    await logger.log("upload_title_saved", {
-      ...meta,
-      title: normalized,
-    });
-    const track = await musicService.finalizePendingUpload(meta.userId);
-
-    if (!track) {
-      await ctx.reply(getText(locale, "UPLOAD_ONLY_MP3_PROMPT"), {
-        reply_markup: createUploadPromptKeyboard(locale),
-      });
-      return;
-    }
-
-    await logger.log("upload_completed", {
-      ...meta,
-      trackId: track.id,
-    });
-    await musicService.clearPendingAction(meta.userId);
+  if (!normalized) {
     await showPanel(ctx, musicService, {
       parseMode: HTML_MODE,
-      replyMarkup: createHomeKeyboard(locale),
-      text: getText(locale, "UPLOAD_DONE_PROMPT"),
+      replyMarkup: createUploadTitleKeyboard(pendingUpload, locale),
+      text: formatUploadTitlePrompt(pendingUpload, locale),
     });
     return;
   }
+
+  await musicService.savePendingTitle(meta.userId, normalized);
+  await logger.log("upload_title_saved", {
+    ...meta,
+    title: normalized,
+  });
+  const track = await musicService.finalizePendingUpload(meta.userId);
+
+  if (!track) {
+    await ctx.reply(getText(locale, "UPLOAD_ONLY_MP3_PROMPT"), {
+      reply_markup: createUploadPromptKeyboard(locale),
+    });
+    return;
+  }
+
+  await logger.log("upload_completed", {
+    ...meta,
+    catalogVisible: track.catalogVisible !== false,
+    trackId: track.id,
+  });
+  await musicService.clearPendingAction(meta.userId);
+  await showPanel(ctx, musicService, {
+    parseMode: HTML_MODE,
+    replyMarkup: createHomeKeyboard(locale),
+    text: getText(locale, "UPLOAD_DONE_PROMPT"),
+  });
 }
 
 async function handleEditTrackTitleText(ctx, meta, rawText, pendingAction, musicService, logger, locale = DEFAULT_LOCALE) {
@@ -1233,6 +1345,20 @@ async function resetPendingState(musicService, userId) {
 
   await musicService.clearPendingAction(userId);
   await musicService.clearPendingUpload(userId);
+}
+
+async function loadExternalSearchResults(previewSearchService, query) {
+  try {
+    return {
+      error: null,
+      results: await previewSearchService.searchTracks(query, SEARCH_RESULT_LIMIT),
+    };
+  } catch (error) {
+    return {
+      error,
+      results: [],
+    };
+  }
 }
 
 async function getStoredLocale(musicService, userId) {
@@ -1367,6 +1493,24 @@ function getUploaderName(ctx) {
   return ctx.from?.username
     ? `@${ctx.from.username}`
     : [ctx.from?.first_name, ctx.from?.last_name].filter(Boolean).join(" ").trim() || "Unknown";
+}
+
+async function storeUploadSourceMessage(ctx, upload, platformSettings = {}) {
+  if (!platformSettings.storageChatId || !upload.sourceChatId || !upload.sourceMessageId) {
+    return upload;
+  }
+
+  const copiedMessage = await ctx.api.copyMessage(
+    platformSettings.storageChatId,
+    upload.sourceChatId,
+    upload.sourceMessageId,
+  );
+
+  return {
+    ...upload,
+    sourceChatId: platformSettings.storageChatId,
+    sourceMessageId: copiedMessage?.message_id ?? upload.sourceMessageId,
+  };
 }
 
 function buildSuggestedTitle(message, fileName) {
@@ -1508,29 +1652,52 @@ function createUploadPromptKeyboard(locale = DEFAULT_LOCALE) {
 }
 
 function createUploadTitleKeyboard(suggestedTitle, locale = DEFAULT_LOCALE) {
+  const pendingUpload = normalizePendingUploadState(suggestedTitle);
   const labels = getUiLabels(locale);
   const keyboard = new InlineKeyboard();
 
-  if (suggestedTitle) {
-    keyboard.text(getText(locale, "KEEP_SUGGESTED_LABEL", { title: shortenLabel(suggestedTitle, 24) }), "upload:title:use").row();
+  if (pendingUpload.title) {
+    keyboard.text(
+      getText(locale, "UPLOAD_PUBLISH_LABEL", { title: shortenLabel(pendingUpload.title, 24) }),
+      "upload:publish",
+    ).row();
+  } else if (pendingUpload.suggestedTitle) {
+    keyboard.text(
+      getText(locale, "KEEP_SUGGESTED_LABEL", { title: shortenLabel(pendingUpload.suggestedTitle, 24) }),
+      "upload:title:use",
+    ).row();
   }
+
+  keyboard.text(
+    getText(
+      locale,
+      pendingUpload.catalogVisible ? "UPLOAD_VISIBILITY_VISIBLE_LABEL" : "UPLOAD_VISIBILITY_HIDDEN_LABEL",
+    ),
+    "upload:visibility:toggle",
+  ).row();
 
   keyboard.text(labels.cancelUpload, "upload:cancel");
 
   return keyboard;
 }
 
-function createSearchResultsKeyboard(results) {
+function createSearchResultsKeyboard(results, locale = DEFAULT_LOCALE, options = {}) {
   return createSearchResultsKeyboardPage(results, {
     page: 0,
     totalPages: 1,
-  });
+  }, locale, options);
 }
 
-function createSearchResultsKeyboardPage(results, pagination) {
+function createSearchResultsKeyboardPage(results, pagination, locale = DEFAULT_LOCALE, { showSectionHeaders = false } = {}) {
   const keyboard = new InlineKeyboard();
+  let lastRenderedType = null;
 
   for (const result of results) {
+    if (showSectionHeaders && result.type !== lastRenderedType) {
+      keyboard.text(getSearchSectionLabel(result.type, locale), "searchpage:stay").row();
+      lastRenderedType = result.type;
+    }
+
     keyboard.text(formatSearchResultButton(result), `searchpick:${result.sessionIndex}`).row();
   }
 
@@ -1723,6 +1890,7 @@ async function renderSearchResultsPanel(ctx, musicService, userId, requestedPage
 
   const totalPages = Math.max(1, Math.ceil(session.results.length / SEARCH_PAGE_SIZE));
   const safePage = Math.max(0, Math.min(requestedPage, totalPages - 1));
+  const showSectionHeaders = hasMixedSearchResultKinds(session.results);
   const pageResults = session.results
     .slice(safePage * SEARCH_PAGE_SIZE, (safePage + 1) * SEARCH_PAGE_SIZE)
     .map((result, index) => ({
@@ -1741,6 +1909,8 @@ async function renderSearchResultsPanel(ctx, musicService, userId, requestedPage
     replyMarkup: createSearchResultsKeyboardPage(pageResults, {
       page: safePage,
       totalPages,
+    }, locale, {
+      showSectionHeaders,
     }),
     text: getText(locale, "SEARCH_RESULTS_PROMPT"),
   });
@@ -1770,6 +1940,10 @@ function summarizeResultKinds(results) {
   }, {});
 }
 
+function hasMixedSearchResultKinds(results) {
+  return new Set(results.map((result) => result.type)).size > 1;
+}
+
 async function getSearchSessionResult(musicService, userId, resultIndex) {
   const session = userId ? await musicService.getSearchSession(userId) : null;
   return session?.results?.[resultIndex] ?? null;
@@ -1785,6 +1959,36 @@ function shortenLabel(value, maxLength) {
   }
 
   return `${value.slice(0, maxLength - 1).trimEnd()}…`;
+}
+
+function normalizePendingUploadState(pendingUpload) {
+  if (typeof pendingUpload === "string") {
+    return {
+      catalogVisible: true,
+      suggestedTitle: pendingUpload,
+      title: "",
+    };
+  }
+
+  return {
+    catalogVisible: pendingUpload?.catalogVisible !== false,
+    suggestedTitle: String(pendingUpload?.suggestedTitle ?? "").trim(),
+    title: String(pendingUpload?.title ?? "").trim(),
+  };
+}
+
+function getSearchSectionLabel(type, locale = DEFAULT_LOCALE) {
+  const safeLocale = normalizeLocale(locale) ?? DEFAULT_LOCALE;
+
+  if (type === "local") {
+    return "🎵 DemoHub";
+  }
+
+  if (safeLocale === "ru") {
+    return "🌐 Внешний каталог";
+  }
+
+  return "🌐 External Catalog";
 }
 
 function emptyProfile() {

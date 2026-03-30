@@ -39,6 +39,12 @@ export function createSyntheticContext(update) {
         });
       },
       async copyMessage(chatId, fromChatId, messageId, options = {}) {
+        if (chatId === "broken-storage-chat" || chatId === -999001) {
+          const error = new Error("Call to 'copyMessage' failed! (400: Bad Request: chat not found)");
+          error.name = "GrammyError";
+          throw error;
+        }
+
         actions.push({
           chatId,
           fromChatId,
@@ -46,6 +52,10 @@ export function createSyntheticContext(update) {
           options,
           type: "copy_message",
         });
+
+        return {
+          message_id: 5000 + actions.length,
+        };
       },
       async sendChatAction(chatId, action) {
         actions.push({
@@ -269,6 +279,16 @@ async function routeSyntheticUpdate(update, ctx, handlers) {
     if (update.callback_query.data === "upload:title:use") {
       await handlers.handleUseSuggestedTitle(ctx);
       return "callback:upload_title";
+    }
+
+    if (update.callback_query.data === "upload:publish") {
+      await handlers.handlePublishUpload(ctx);
+      return "callback:upload_publish";
+    }
+
+    if (update.callback_query.data === "upload:visibility:toggle") {
+      await handlers.handleUploadVisibilityToggle(ctx);
+      return "callback:upload_visibility";
     }
 
     if (update.callback_query.data === "upload:donation:skip") {

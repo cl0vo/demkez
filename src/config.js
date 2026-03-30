@@ -22,6 +22,7 @@ export function getPlatformSettings() {
     feeBps: 300,
     feePercentLabel: "3%",
     paySupportHandle: process.env.PAY_SUPPORT_HANDLE?.trim() ?? "",
+    storageChatId: normalizeChatId(process.env.STORAGE_CHAT_ID),
     starsHoldDays: Number.parseInt(process.env.STARS_HOLD_DAYS ?? "7", 10) || 7,
     starsSupportAmounts: supportAmounts.length > 0 ? supportAmounts : [10, 25, 50],
     uploadDailyLimit,
@@ -30,4 +31,22 @@ export function getPlatformSettings() {
     uploadWindowHours: 24,
     withdrawMinStars,
   };
+}
+
+function normalizeChatId(value) {
+  const normalized = String(value ?? "").trim();
+
+  if (!normalized) {
+    return null;
+  }
+
+  if (/^-?\d+$/.test(normalized)) {
+    const numericValue = Number(normalized);
+
+    if (Number.isSafeInteger(numericValue)) {
+      return numericValue;
+    }
+  }
+
+  return normalized;
 }

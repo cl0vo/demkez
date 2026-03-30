@@ -88,6 +88,14 @@ export function createBot({ token, musicService, previewSearchService, logger, p
     await handlers.handleUseSuggestedTitle(ctx);
   });
 
+  bot.callbackQuery(/^upload:publish$/, async (ctx) => {
+    await handlers.handlePublishUpload(ctx);
+  });
+
+  bot.callbackQuery(/^upload:visibility:toggle$/, async (ctx) => {
+    await handlers.handleUploadVisibilityToggle(ctx);
+  });
+
   bot.callbackQuery(/^upload:donation:skip$/, async (ctx) => {
     await handlers.handleSkipDonation(ctx);
   });

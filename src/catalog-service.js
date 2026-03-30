@@ -32,6 +32,7 @@ export function createCatalogService({ dbPath = DB_PATH, feeBps = 300, starsHold
         db.users[String(upload.userId)] = {
           ...(db.users[String(upload.userId)] ?? {}),
           pendingUpload: {
+            catalogVisible: upload.catalogVisible !== false,
             createdAt: new Date().toISOString(),
             durationSeconds: Number(upload.durationSeconds ?? 0),
             fileId: upload.fileId,
@@ -90,6 +91,7 @@ export function createCatalogService({ dbPath = DB_PATH, feeBps = 300, starsHold
         }
 
         const track = {
+          catalogVisible: pending.catalogVisible !== false,
           createdAt: new Date().toISOString(),
           durationSeconds: Number(pending.durationSeconds ?? 0),
           fileId: pending.fileId,
@@ -189,6 +191,19 @@ export function createCatalogService({ dbPath = DB_PATH, feeBps = 300, starsHold
         }
 
         pending.title = title;
+        return pending;
+      });
+    },
+
+    async savePendingCatalogVisibility(userId, catalogVisible) {
+      return mutateDb(async (db) => {
+        const pending = db.users[String(userId)]?.pendingUpload;
+
+        if (!pending) {
+          return null;
+        }
+
+        pending.catalogVisible = catalogVisible !== false;
         return pending;
       });
     },
@@ -387,6 +402,7 @@ export function createCatalogService({ dbPath = DB_PATH, feeBps = 300, starsHold
       const db = await readDb(dbPath);
 
       return db.tracks
+        .filter((track) => track.catalogVisible !== false)
         .map((track) => ({
           score: scoreTrack(track, normalizedQuery),
           track,
@@ -532,6 +548,7 @@ function toTrackResult(track, db) {
 
   return {
     createdAt: track.createdAt,
+    catalogVisible: track.catalogVisible !== false,
     durationSeconds: Number(track.durationSeconds ?? 0),
     fileId: track.fileId,
     fileType: track.fileType,

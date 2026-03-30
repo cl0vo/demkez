@@ -100,7 +100,9 @@ export function normalizeQuery(text) {
 
 export function formatTrackButton(track) {
   const duration = formatDuration(track.durationSeconds);
-  const label = duration ? `${duration} ${track.title}` : track.title;
+  const hiddenMarker = track.catalogVisible === false ? "🙈 " : "";
+  const baseTitle = `${hiddenMarker}${track.title}`;
+  const label = duration ? `${duration} ${baseTitle}` : baseTitle;
   return trimToLength(label, MAX_BUTTON_TEXT);
 }
 
@@ -112,10 +114,25 @@ export function formatExternalSearchResultButton(result) {
 }
 
 export function formatUploadTitlePrompt(suggestedTitle, locale = DEFAULT_LOCALE) {
+  const state = normalizeUploadPromptState(suggestedTitle);
   const base = getText(locale, "UPLOAD_TITLE_PROMPT");
-  return suggestedTitle
-    ? `${base}\n\n${getText(locale, "SUGGESTION_LABEL", { title: escapeHtml(suggestedTitle) })}`
-    : base;
+  const lines = [base];
+
+  if (state.title) {
+    lines.push("");
+    lines.push(getText(locale, "CURRENT_TITLE_LABEL", { title: escapeHtml(state.title) }));
+  } else if (state.suggestedTitle) {
+    lines.push("");
+    lines.push(getText(locale, "SUGGESTION_LABEL", { title: escapeHtml(state.suggestedTitle) }));
+  }
+
+  lines.push("");
+  lines.push(getText(
+    locale,
+    state.catalogVisible ? "UPLOAD_CATALOG_STATUS_VISIBLE" : "UPLOAD_CATALOG_STATUS_HIDDEN",
+  ));
+
+  return lines.join("\n");
 }
 
 export function formatSelectionMessage(track, locale = DEFAULT_LOCALE) {
@@ -327,6 +344,22 @@ export function formatLanguageSavedPrompt(locale = DEFAULT_LOCALE) {
 
 function trimToLength(value, maxLength) {
   return value.length <= maxLength ? value : `${value.slice(0, maxLength - 1).trimEnd()}…`;
+}
+
+function normalizeUploadPromptState(input) {
+  if (typeof input === "string") {
+    return {
+      catalogVisible: true,
+      suggestedTitle: input,
+      title: "",
+    };
+  }
+
+  return {
+    catalogVisible: input?.catalogVisible !== false,
+    suggestedTitle: String(input?.suggestedTitle ?? "").trim(),
+    title: String(input?.title ?? "").trim(),
+  };
 }
 
 function escapeHtml(value) {

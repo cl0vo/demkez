@@ -99,6 +99,7 @@ function createFixtureDeps(fixture) {
         }
 
         const savedTrack = {
+          catalogVisible: pending.catalogVisible !== false,
           fileId: pending.fileId,
           fileType: pending.fileType,
           id: `fixture-track-${state.tracks.length + 1}`,
@@ -147,8 +148,14 @@ function createFixtureDeps(fixture) {
       async savePendingTitle(userId, title) {
         state.users[String(userId)].pendingUpload.title = title;
       },
+      async savePendingCatalogVisibility(userId, catalogVisible) {
+        state.users[String(userId)].pendingUpload.catalogVisible = catalogVisible !== false;
+        return state.users[String(userId)].pendingUpload;
+      },
       async searchTracks(query, limit = 5) {
-        return state.tracks.filter((track) => track.title.toLowerCase().includes(query.toLowerCase())).slice(0, limit);
+        return state.tracks
+          .filter((track) => track.catalogVisible !== false && track.title.toLowerCase().includes(query.toLowerCase()))
+          .slice(0, limit);
       },
       async setSearchSession(userId, session) {
         state.users[String(userId)] ??= {};
@@ -175,6 +182,7 @@ function createFixtureDeps(fixture) {
       feeBps: 300,
       feePercentLabel: "3%",
       paySupportHandle: "@demohub_support",
+      storageChatId: null,
       starsHoldDays: 7,
       starsSupportAmounts: [10, 25, 50],
       uploadDailyLimit: 20,
