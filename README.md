@@ -73,6 +73,9 @@ BOT_TOKEN=your_telegram_bot_token
 STORAGE_CHAT_ID=-1001234567890
 STORAGE_COPY_MIN_INTERVAL_MS=1250
 STORAGE_COPY_MAX_RETRIES=3
+COMMAND_SYNC_RETRY_COUNT=5
+COMMAND_SYNC_RETRY_DELAY_MS=2500
+EXTERNAL_SEARCH_TIMEOUT_MS=4500
 PAY_SUPPORT_HANDLE=@demohub_support
 STARS_HOLD_DAYS=7
 STARS_SUPPORT_AMOUNTS=10,25,50
@@ -90,6 +93,8 @@ UPLOAD_DAILY_LIMIT=20
 - при одновременных выгрузках бот будет репостить mp3 в канал по очереди
 - `STORAGE_COPY_MIN_INTERVAL_MS` задаёт минимальный интервал между репостами в техканал
 - `STORAGE_COPY_MAX_RETRIES` задаёт число автоповторов, если Telegram вернул `429 retry_after`
+- `COMMAND_SYNC_RETRY_COUNT` и `COMMAND_SYNC_RETRY_DELAY_MS` дают боту пережить временный DNS/Telegram-сбой на старте
+- `EXTERNAL_SEARCH_TIMEOUT_MS` ограничивает зависание внешнего поиска и держит polling-процесс отзывчивым на слабом VPS
 
 ## Правила по умолчанию
 
@@ -129,6 +134,8 @@ pm2 start ecosystem.config.cjs
 pm2 save
 pm2 startup
 ```
+
+`ecosystem.config.cjs` уже зафиксирован под один инстанс с `autorestart`, `restart_delay` и `max_memory_restart=350M`, чтобы на маленьком VPS бот не разгонялся по памяти бесконтрольно.
 
 Логи:
 

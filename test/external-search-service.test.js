@@ -190,3 +190,22 @@ test("external search merges Apple Music and MusicBrainz duplicates into one res
   assert.equal(results[0].externalId, "itunes:99");
   assert.equal(results[0].artworkUrl, "https://img.example/xtal.jpg");
 });
+
+test("external search fails fast with a descriptive timeout error", async () => {
+  const service = createExternalSearchService({
+    endpoint: "https://music.example/search",
+    musicBrainzEndpoint: "https://musicbrainz.example/ws/2/recording",
+    musicBrainzMinIntervalMs: 0,
+    requestTimeoutMs: 50,
+    fetchImpl: async () => {
+      const error = new Error("The operation timed out");
+      error.name = "TimeoutError";
+      throw error;
+    },
+  });
+
+  await assert.rejects(
+    () => service.searchTracks("timeout demo", 5),
+    /External search timed out after 50ms/,
+  );
+});

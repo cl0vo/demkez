@@ -6,6 +6,7 @@ const MAX_QUERY_VARIANTS = 3;
 const MIN_CANDIDATE_POOL = 8;
 const MUSICBRAINZ_REQUEST_GAP_MS = 1100;
 const MUSICBRAINZ_FALLBACK_SCORE = 180;
+const DEFAULT_REQUEST_TIMEOUT_MS = 4500;
 
 export function createExternalSearchService({
   fetchImpl = globalThis.fetch,
@@ -13,6 +14,7 @@ export function createExternalSearchService({
   musicBrainzEndpoint = MUSICBRAINZ_ENDPOINT,
   musicBrainzUserAgent = DEFAULT_MUSICBRAINZ_USER_AGENT,
   musicBrainzMinIntervalMs = MUSICBRAINZ_REQUEST_GAP_MS,
+  requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
 } = {}) {
   const scheduleMusicBrainzRequest = createRequestScheduler(musicBrainzMinIntervalMs);
 
@@ -28,7 +30,7 @@ export function createExternalSearchService({
       const candidatePool = Math.min(MAX_EXTERNAL_RESULTS, Math.max(MIN_CANDIDATE_POOL, safeLimit * 4));
       const queryVariants = createQueryVariants(normalizedQuery);
       const appleAttempts = await Promise.allSettled(
-        queryVariants.map((variant) => fetchAppleTracks(fetchImpl, endpoint, variant, candidatePool)),
+        queryVariants.map((variant) => fetchAppleTracks(fetchImpl, endpoint, variant, candidatePool, requestTimeoutMs)),
       );
       const appleSucceeded = appleAttempts.filter((attempt) => attempt.status === "fulfilled");
       const appleResults = dedupeExternalResults(
@@ -46,6 +48,7 @@ export function createExternalSearchService({
             limit: candidatePool,
             query: normalizedQuery,
             scheduleRequest: scheduleMusicBrainzRequest,
+            timeoutMs: requestTimeoutMs,
             userAgent: musicBrainzUserAgent,
           });
         } catch (error) {
@@ -69,18 +72,18 @@ export function createExternalSearchService({
   };
 }
 
-async function fetchAppleTracks(fetchImpl, endpoint, query, limit) {
+async function fetchAppleTracks(fetchImpl, endpoint, query, limit, timeoutMs) {
   const url = new URL(endpoint);
   url.searchParams.set("term", query);
   url.searchParams.set("entity", "song");
   url.searchParams.set("media", "music");
   url.searchParams.set("limit", String(Math.max(1, Math.min(limit, MAX_EXTERNAL_RESULTS))));
 
-  const response = await fetchImpl(url, {
+  const response = await fetchWithTimeout(fetchImpl, url, {
     headers: {
       Accept: "application/json",
     },
-  });
+  }, timeoutMs, "External search");
 
   if (!response.ok) {
     throw new Error(`External search failed with status ${response.status}`);
@@ -100,6 +103,7 @@ async function fetchMusicBrainzTracks({
   limit,
   query,
   scheduleRequest,
+  timeoutMs,
   userAgent,
 }) {
   return scheduleRequest(async () => {
@@ -109,12 +113,12 @@ async function fetchMusicBrainzTracks({
     url.searchParams.set("limit", String(Math.max(1, Math.min(limit, MAX_EXTERNAL_RESULTS))));
     url.searchParams.set("dismax", "true");
 
-    const response = await fetchImpl(url, {
+    const response = await fetchWithTimeout(fetchImpl, url, {
       headers: {
         Accept: "application/json",
         "User-Agent": userAgent,
       },
-    });
+    }, timeoutMs, "MusicBrainz search");
 
     if (!response.ok) {
       throw new Error(`MusicBrainz search failed with status ${response.status}`);
@@ -515,4 +519,31 @@ function delay(ms) {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
+}
+
+async function fetchWithTimeout(fetchImpl, url, options, timeoutMs, label) {
+  try {
+    return await fetchImpl(url, {
+      ...options,
+      signal: getTimeoutSignal(timeoutMs),
+    });
+  } catch (error) {
+    if (isTimeoutError(error)) {
+      throw new Error(`${label} timed out after ${timeoutMs}ms`);
+    }
+
+    throw error;
+  }
+}
+
+function getTimeoutSignal(timeoutMs) {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || typeof AbortSignal?.timeout !== "function") {
+    return undefined;
+  }
+
+  return AbortSignal.timeout(timeoutMs);
+}
+
+function isTimeoutError(error) {
+  return error?.name === "AbortError" || error?.name === "TimeoutError";
 }

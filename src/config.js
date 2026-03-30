@@ -17,10 +17,16 @@ export function getPlatformSettings() {
   const uploadMaxMb = Number.parseInt(process.env.UPLOAD_MAX_MB ?? "25", 10) || 25;
   const uploadDailyLimit = Number.parseInt(process.env.UPLOAD_DAILY_LIMIT ?? "20", 10) || 20;
   const withdrawMinStars = Number.parseInt(process.env.WITHDRAW_MIN_STARS ?? "100", 10) || 100;
+  const commandSyncRetryCount = Number.parseInt(process.env.COMMAND_SYNC_RETRY_COUNT ?? "5", 10) || 5;
+  const commandSyncRetryDelayMs = Number.parseInt(process.env.COMMAND_SYNC_RETRY_DELAY_MS ?? "2500", 10) || 2500;
+  const externalSearchTimeoutMs = Number.parseInt(process.env.EXTERNAL_SEARCH_TIMEOUT_MS ?? "4500", 10) || 4500;
   const storageCopyMaxRetries = Number.parseInt(process.env.STORAGE_COPY_MAX_RETRIES ?? "3", 10) || 3;
   const storageCopyMinIntervalMs = Number.parseInt(process.env.STORAGE_COPY_MIN_INTERVAL_MS ?? "1250", 10) || 1250;
 
   return {
+    commandSyncRetryCount,
+    commandSyncRetryDelayMs,
+    externalSearchTimeoutMs,
     feeBps: 300,
     feePercentLabel: "3%",
     paySupportHandle: process.env.PAY_SUPPORT_HANDLE?.trim() ?? "",
