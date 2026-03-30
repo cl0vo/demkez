@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  SUPPORTED_LOCALES,
   formatCabinetMessage,
   formatMyTracksMessage,
   formatPaySupportMessage,
@@ -16,6 +17,18 @@ import {
   formatWithdrawRequestMessage,
   normalizeQuery,
 } from "../src/messages.js";
+import ru from "../src/locales/ru.js";
+import en from "../src/locales/en.js";
+import de from "../src/locales/de.js";
+import fr from "../src/locales/fr.js";
+import es from "../src/locales/es.js";
+import it from "../src/locales/it.js";
+import pt from "../src/locales/pt.js";
+import zh from "../src/locales/zh.js";
+import hi from "../src/locales/hi.js";
+import ja from "../src/locales/ja.js";
+
+const LOCALES = { ru, en, de, fr, es, it, pt, zh, hi, ja };
 
 test("normalizeQuery trims and collapses spaces", () => {
   assert.equal(normalizeQuery("  arctic   monkeys  "), "arctic monkeys");
@@ -119,4 +132,23 @@ test("withdraw request message prefers configured handle", () => {
 
   assert.match(message, /<b>Заявка на вывод<\/b>/);
   assert.match(message, /<b>@demohub_support<\/b>/);
+});
+
+test("all supported locale dictionaries stay in sync", () => {
+  assert.equal(SUPPORTED_LOCALES.length, 10);
+
+  const baseKeys = Object.keys(ru).sort();
+
+  for (const locale of SUPPORTED_LOCALES.map((entry) => entry.code)) {
+    const dict = LOCALES[locale];
+
+    assert.ok(dict, `missing locale dictionary for ${locale}`);
+    assert.deepEqual(Object.keys(dict).sort(), baseKeys, `locale keys mismatch for ${locale}`);
+    assert.ok(dict.COMMANDS, `missing commands block for ${locale}`);
+    assert.deepEqual(
+      Object.keys(dict.COMMANDS).sort(),
+      Object.keys(ru.COMMANDS).sort(),
+      `command keys mismatch for ${locale}`,
+    );
+  }
 });

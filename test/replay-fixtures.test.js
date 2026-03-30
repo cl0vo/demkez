@@ -46,6 +46,11 @@ test("replay fixtures stay green", async () => {
 
 function createFixtureDeps(fixture) {
   const state = structuredClone(fixture.state ?? { supportIntents: [], supportPayments: [], tracks: [], users: {} });
+  state.users ??= {};
+  state.users["20"] = {
+    ...(state.users["20"] ?? {}),
+    locale: state.users["20"]?.locale ?? "ru",
+  };
 
   return {
     logger: {
@@ -114,6 +119,9 @@ function createFixtureDeps(fixture) {
       async getPendingUpload(userId) {
         return state.users[String(userId)]?.pendingUpload ?? null;
       },
+      async getUserLocale(userId) {
+        return state.users[String(userId)]?.locale ?? null;
+      },
       async getSearchSession(userId) {
         return state.users[String(userId)]?.searchSession ?? null;
       },
@@ -151,6 +159,11 @@ function createFixtureDeps(fixture) {
         state.users[String(userId)] ??= {};
         state.users[String(userId)].pendingAction = action;
         return action;
+      },
+      async setUserLocale(userId, locale) {
+        state.users[String(userId)] ??= {};
+        state.users[String(userId)].locale = locale;
+        return locale;
       },
       async setUiPanel(userId, panel) {
         state.users[String(userId)] ??= {};

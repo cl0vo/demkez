@@ -42,6 +42,11 @@ async function runFixture(fixture) {
   const events = [];
   const captures = [];
   const state = structuredClone(fixture.state ?? { supportIntents: [], supportPayments: [], tracks: [], users: {} });
+  state.users ??= {};
+  state.users["20"] = {
+    ...(state.users["20"] ?? {}),
+    locale: state.users["20"]?.locale ?? "ru",
+  };
 
   const execution = await dispatchSyntheticUpdate(fixture.update, {
     logger: {
@@ -112,6 +117,9 @@ async function runFixture(fixture) {
       async getPendingUpload(userId) {
         return state.users[String(userId)]?.pendingUpload ?? null;
       },
+      async getUserLocale(userId) {
+        return state.users[String(userId)]?.locale ?? null;
+      },
       async getSearchSession(userId) {
         return state.users[String(userId)]?.searchSession ?? null;
       },
@@ -149,6 +157,11 @@ async function runFixture(fixture) {
         state.users[String(userId)] ??= {};
         state.users[String(userId)].pendingAction = action;
         return action;
+      },
+      async setUserLocale(userId, locale) {
+        state.users[String(userId)] ??= {};
+        state.users[String(userId)].locale = locale;
+        return locale;
       },
       async setUiPanel(userId, panel) {
         state.users[String(userId)] ??= {};

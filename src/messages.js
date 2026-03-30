@@ -1,55 +1,101 @@
+import ru from "./locales/ru.js";
+import en from "./locales/en.js";
+import de from "./locales/de.js";
+import fr from "./locales/fr.js";
+import es from "./locales/es.js";
+import it from "./locales/it.js";
+import pt from "./locales/pt.js";
+import zh from "./locales/zh.js";
+import hi from "./locales/hi.js";
+import ja from "./locales/ja.js";
+
 const MAX_BUTTON_TEXT = 55;
+const COPY = { ru, en, de, fr, es, it, pt, zh, hi, ja };
 
-export const START_PROMPT = "🎧 <b>DemoHub</b>\nВыгружайте свои mp3, находите треки и поддерживайте авторов в Stars.\n\nНапишите название трека или артиста.";
-export const SEARCH_RESULTS_PROMPT = "🔎 <b>Вот что нашлось</b>";
-export const EMPTY_QUERY_PROMPT = "🔎 Напишите название трека или артиста.";
-export const EMPTY_RESULTS_PROMPT = "Ничего не нашлось.\nПопробуйте другой запрос.";
-export const LOOKUP_ERROR_PROMPT = "Не удалось открыть трек.\nПопробуйте ещё раз.";
-export const NON_TEXT_PROMPT = "Напишите название трека\nили выгрузите mp3.";
-export const SEARCH_ERROR_PROMPT = "Поиск временно недоступен.\nПопробуйте ещё раз чуть позже.";
-export const UPLOAD_TITLE_PROMPT = "🎵 <b>Назовите трек</b>\nТак его будут находить в поиске.\nНапример: <code>Travis Scott - FE!N</code>";
-export const UPLOAD_DONE_PROMPT = "✅ <b>Трек опубликован</b>\nТеперь он доступен в поиске.\n⭐ <b>Stars</b> за поддержку этого трека будут зачисляться вам на внутренний баланс.";
-export const UPLOAD_ONLY_MP3_PROMPT = "Пришли mp3 файлом\nили как аудио.";
-export const SENT_TRACK_PROMPT = "🔎 Можно искать дальше.";
-export const TRACK_OPENED_PROMPT = "🎧 <b>Трек открыт</b>\nМожно продолжать поиск.";
-export const MY_TRACKS_EMPTY_PROMPT = "Здесь пока пусто.\nВыгрузите первый mp3, и он сразу появится в поиске.";
-export const MY_TRACKS_TITLE = "🎵 <b>Мои треки</b>";
-export const TITLE_SUGGESTION_SAVED_PROMPT = "✅ <b>Трек опубликован</b>\nТеперь он доступен в поиске.\n⭐ <b>Stars</b> за поддержку этого трека будут зачисляться вам на внутренний баланс.";
-export const STARS_BALANCE_PROMPT = "⭐ <b>Баланс</b>";
-export const WITHDRAW_PROMPT = "💸 <b>Вывод Stars</b>";
-export const STARS_SUPPORT_PROMPT = "Выберите сумму поддержки";
-export const STARS_SUPPORT_UNAVAILABLE_PROMPT = "Сейчас этот трек нельзя поддержать.";
-export const STARS_INVOICE_EXPIRED_PROMPT = "Ссылка на оплату уже устарела.\nОткройте новую через «Поддержать».";
-export const PAY_SUPPORT_PROMPT = "Если возникла проблема с оплатой, напишите в поддержку.";
-export const RULES_PROMPT = "📘 <b>Правила DemoHub</b>";
-export const SEARCH_BUTTON_TEXT = "🔎 Поиск";
-export const UPLOAD_BUTTON_TEXT = "⬆️ Загрузить mp3";
-export const CABINET_BUTTON_TEXT = "👤 Кабинет";
-export const SEARCH_BUTTON_PROMPT = "🔎 <b>Поиск</b>\nНапишите название трека или артиста.";
-export const CABINET_TRACKS_PREVIEW_EMPTY = "Треков пока нет.";
-export const CABINET_PROMPT = "👤 <b>Кабинет</b>";
-export const UPLOAD_MENU_PROMPT = [
-  "⬆️ <b>Выгрузите трек</b>",
-  "Пришлите mp3 файлом или как аудио.",
-  "",
-  "<b>Как это работает</b>",
-  "1. Выгружаете mp3",
-  "2. Даёте название",
-  "3. Трек появляется в поиске",
-  "4. <b>Stars</b> за поддержку идут вам на внутренний баланс",
-].join("\n");
-export const TRACK_SUPPORT_INVOICE_TITLE = "Поддержать трек";
+export const DEFAULT_LOCALE = "ru";
+export const SUPPORTED_LOCALES = [
+  { code: "ru", flag: "🇷🇺", name: "Русский" },
+  { code: "en", flag: "🇬🇧", name: "English" },
+  { code: "de", flag: "🇩🇪", name: "Deutsch" },
+  { code: "fr", flag: "🇫🇷", name: "Français" },
+  { code: "es", flag: "🇪🇸", name: "Español" },
+  { code: "it", flag: "🇮🇹", name: "Italiano" },
+  { code: "pt", flag: "🇵🇹", name: "Português" },
+  { code: "zh", flag: "🇨🇳", name: "中文" },
+  { code: "hi", flag: "🇮🇳", name: "हिन्दी" },
+  { code: "ja", flag: "🇯🇵", name: "日本語" },
+];
 
-function trimToLength(value, maxLength) {
-  if (value.length <= maxLength) {
-    return value;
-  }
-
-  return `${value.slice(0, maxLength - 1).trimEnd()}…`;
+export function isSupportedLocale(locale) {
+  return Object.hasOwn(COPY, locale);
 }
 
+export function normalizeLocale(locale) {
+  const value = String(locale ?? "").trim().toLowerCase();
+
+  if (!value) {
+    return null;
+  }
+
+  const base = value.split(/[-_]/, 1)[0];
+  return isSupportedLocale(base) ? base : null;
+}
+
+export function getUiLabels(locale = DEFAULT_LOCALE) {
+  return {
+    home: getText(locale, "HOME_LABEL"),
+    back: getText(locale, "BACK_LABEL"),
+    search: getText(locale, "SEARCH_LABEL"),
+    searchNew: getText(locale, "SEARCH_NEW_LABEL"),
+    upload: getText(locale, "UPLOAD_LABEL"),
+    cabinet: getText(locale, "CABINET_LABEL"),
+    tracks: getText(locale, "TRACKS_LABEL"),
+    withdraw: getText(locale, "WITHDRAW_LABEL"),
+    requestWithdraw: getText(locale, "REQUEST_WITHDRAW_LABEL"),
+    cancelUpload: getText(locale, "CANCEL_UPLOAD_LABEL"),
+    keepSuggested: getText(locale, "KEEP_SUGGESTED_LABEL"),
+    language: getText(locale, "LANGUAGE_LABEL"),
+  };
+}
+
+export function getText(locale = DEFAULT_LOCALE, key, params = {}) {
+  const safeLocale = normalizeLocale(locale) ?? DEFAULT_LOCALE;
+  const template = COPY[safeLocale]?.[key] ?? COPY[DEFAULT_LOCALE]?.[key] ?? "";
+  return template.replace(/\{(\w+)\}/g, (_, name) => String(params[name] ?? ""));
+}
+
+export function getCommandDescriptions(locale = DEFAULT_LOCALE) {
+  return COPY[normalizeLocale(locale) ?? DEFAULT_LOCALE].COMMANDS;
+}
+
+export const START_PROMPT = getText(DEFAULT_LOCALE, "START_PROMPT");
+export const SEARCH_RESULTS_PROMPT = getText(DEFAULT_LOCALE, "SEARCH_RESULTS_PROMPT");
+export const EMPTY_QUERY_PROMPT = getText(DEFAULT_LOCALE, "EMPTY_QUERY_PROMPT");
+export const EMPTY_RESULTS_PROMPT = getText(DEFAULT_LOCALE, "EMPTY_RESULTS_PROMPT");
+export const LOOKUP_ERROR_PROMPT = getText(DEFAULT_LOCALE, "LOOKUP_ERROR_PROMPT");
+export const TRACK_REMOVED_BROKEN_PROMPT = getText(DEFAULT_LOCALE, "TRACK_REMOVED_BROKEN_PROMPT");
+export const NON_TEXT_PROMPT = getText(DEFAULT_LOCALE, "NON_TEXT_PROMPT");
+export const SEARCH_ERROR_PROMPT = getText(DEFAULT_LOCALE, "SEARCH_ERROR_PROMPT");
+export const UPLOAD_TITLE_PROMPT = getText(DEFAULT_LOCALE, "UPLOAD_TITLE_PROMPT");
+export const UPLOAD_DONE_PROMPT = getText(DEFAULT_LOCALE, "UPLOAD_DONE_PROMPT");
+export const UPLOAD_ONLY_MP3_PROMPT = getText(DEFAULT_LOCALE, "UPLOAD_ONLY_MP3_PROMPT");
+export const SENT_TRACK_PROMPT = getText(DEFAULT_LOCALE, "SENT_TRACK_PROMPT");
+export const TRACK_OPENED_PROMPT = getText(DEFAULT_LOCALE, "TRACK_OPENED_PROMPT");
+export const MY_TRACKS_EMPTY_PROMPT = getText(DEFAULT_LOCALE, "MY_TRACKS_EMPTY_PROMPT");
+export const MY_TRACKS_TITLE = getText(DEFAULT_LOCALE, "MY_TRACKS_TITLE");
+export const TITLE_SUGGESTION_SAVED_PROMPT = getText(DEFAULT_LOCALE, "UPLOAD_DONE_PROMPT");
+export const STARS_BALANCE_PROMPT = getText(DEFAULT_LOCALE, "STARS_BALANCE_PROMPT");
+export const WITHDRAW_PROMPT = getText(DEFAULT_LOCALE, "WITHDRAW_PROMPT");
+export const STARS_SUPPORT_UNAVAILABLE_PROMPT = getText(DEFAULT_LOCALE, "STARS_SUPPORT_UNAVAILABLE_PROMPT");
+export const STARS_INVOICE_EXPIRED_PROMPT = getText(DEFAULT_LOCALE, "STARS_INVOICE_EXPIRED_PROMPT");
+export const PAY_SUPPORT_PROMPT = getText(DEFAULT_LOCALE, "PAY_SUPPORT_PROMPT");
+export const SEARCH_BUTTON_PROMPT = getText(DEFAULT_LOCALE, "SEARCH_BUTTON_PROMPT");
+export const CABINET_PROMPT = getText(DEFAULT_LOCALE, "CABINET_PROMPT");
+export const UPLOAD_MENU_PROMPT = getText(DEFAULT_LOCALE, "UPLOAD_MENU_PROMPT");
+export const TRACK_SUPPORT_INVOICE_TITLE = getText(DEFAULT_LOCALE, "TRACK_SUPPORT_INVOICE_TITLE");
+
 export function normalizeQuery(text) {
-  return text.replace(/\s+/g, " ").trim();
+  return String(text).replace(/\s+/g, " ").trim();
 }
 
 export function formatTrackButton(track) {
@@ -58,47 +104,100 @@ export function formatTrackButton(track) {
   return trimToLength(label, MAX_BUTTON_TEXT);
 }
 
-export function formatUploadTitlePrompt(suggestedTitle) {
-  if (!suggestedTitle) {
-    return UPLOAD_TITLE_PROMPT;
-  }
-
-  return `${UPLOAD_TITLE_PROMPT}\n\n<b>Подсказка:</b> ${escapeHtml(suggestedTitle)}`;
+export function formatExternalSearchResultButton(result) {
+  const duration = formatDuration(result.durationSeconds);
+  const artistLine = [result.artist, result.title].filter(Boolean).join(" - ") || result.title;
+  const label = duration ? `🌐 ${duration} ${artistLine}` : `🌐 ${artistLine}`;
+  return trimToLength(label, MAX_BUTTON_TEXT);
 }
 
-export function formatSelectionMessage(track) {
+export function formatUploadTitlePrompt(suggestedTitle, locale = DEFAULT_LOCALE) {
+  const base = getText(locale, "UPLOAD_TITLE_PROMPT");
+  return suggestedTitle
+    ? `${base}\n\n${getText(locale, "SUGGESTION_LABEL", { title: escapeHtml(suggestedTitle) })}`
+    : base;
+}
+
+export function formatSelectionMessage(track, locale = DEFAULT_LOCALE) {
   const lines = [`🎵 <b>${escapeHtml(track.title)}</b>`];
 
   if (track.uploaderName) {
-    lines.push(`uploaded by ${escapeHtml(track.uploaderName)}`);
+    lines.push(getText(locale, "UPLOADED_BY", { name: escapeHtml(track.uploaderName) }));
   }
 
   lines.push("");
-  lines.push("Трек отправлен выше.");
-
+  lines.push(getText(locale, "TRACK_SENT_ABOVE"));
   return lines.join("\n");
 }
 
-export function formatTrackCaption(track, supportLink) {
+export function formatTrackCaption(track, supportLink, locale = DEFAULT_LOCALE) {
   const lines = [`🎵 <b>${escapeHtml(track.title)}</b>`];
 
   if (track.uploaderName) {
-    lines.push(`uploaded by ${escapeHtml(track.uploaderName)}`);
+    lines.push(getText(locale, "UPLOADED_BY", { name: escapeHtml(track.uploaderName) }));
   }
 
   if (supportLink) {
-    lines.push(`<a href="${escapeHtml(supportLink)}">💫 Поддержать</a>`);
+    lines.push(`<a href="${escapeHtml(supportLink)}">${escapeHtml(getText(locale, "SUPPORT_LINK_LABEL"))}</a>`);
   }
 
   return lines.join("\n");
 }
 
-export function formatMyTracksMessage(tracks) {
-  if (tracks.length === 0) {
-    return MY_TRACKS_EMPTY_PROMPT;
+export function formatExternalSearchResultCaption(result, locale = DEFAULT_LOCALE) {
+  const lines = [`🌐 <b>${escapeHtml(result.title)}</b>`];
+
+  if (result.artist) {
+    lines.push(getText(locale, "ARTIST_LABEL", { artist: escapeHtml(result.artist) }));
   }
 
-  const lines = [MY_TRACKS_TITLE];
+  if (result.durationSeconds > 0) {
+    lines.push(getText(locale, "DURATION_LABEL", { duration: formatDuration(result.durationSeconds) }));
+  }
+
+  lines.push(getText(locale, "EXTERNAL_TRACK_STATUS"));
+
+  if (result.source) {
+    lines.push(getText(locale, "EXTERNAL_TRACK_SOURCE", { source: escapeHtml(result.source) }));
+  }
+
+  return lines.join("\n");
+}
+
+export function formatExternalUploadPrompt(result, locale = DEFAULT_LOCALE) {
+  const suggestedTitle = [result.artist, result.title].filter(Boolean).join(" - ") || result.title;
+
+  return [
+    getText(locale, "EXTERNAL_UPLOAD_PROMPT_TITLE"),
+    getText(locale, "EXTERNAL_UPLOAD_PROMPT_BODY"),
+    "",
+    getText(locale, "SUGGESTION_LABEL", { title: escapeHtml(suggestedTitle) }),
+  ].join("\n");
+}
+
+export function formatTrackRenamePrompt(track, locale = DEFAULT_LOCALE) {
+  return [
+    getText(locale, "TRACK_RENAME_PROMPT_TITLE"),
+    getText(locale, "TRACK_RENAME_PROMPT_BODY"),
+    "",
+    getText(locale, "TRACK_RENAME_CURRENT", { title: escapeHtml(track.title) }),
+  ].join("\n");
+}
+
+export function formatTrackRenamedMessage(track, locale = DEFAULT_LOCALE) {
+  return [
+    getText(locale, "MY_TRACKS_TITLE"),
+    "",
+    getText(locale, "TRACK_RENAMED_PROMPT", { title: escapeHtml(track.title) }),
+  ].join("\n");
+}
+
+export function formatMyTracksMessage(tracks, locale = DEFAULT_LOCALE) {
+  if (tracks.length === 0) {
+    return getText(locale, "MY_TRACKS_EMPTY_PROMPT");
+  }
+
+  const lines = [getText(locale, "MY_TRACKS_TITLE")];
 
   for (const [index, track] of tracks.entries()) {
     lines.push(`${index + 1}. ${track.title}`);
@@ -107,135 +206,108 @@ export function formatMyTracksMessage(tracks) {
   return lines.join("\n");
 }
 
-export function formatCabinetMessage(profile, platformSettings) {
-  const totalStars = profile.starsTotalXtr;
-  const withdrawMinStars = platformSettings.withdrawMinStars;
-  const lines = [
-    CABINET_PROMPT,
-    "",
-    `🎵 Треков: ${profile.trackCount}`,
-    `⭐ Баланс: ${totalStars} Stars`,
-    totalStars >= withdrawMinStars
-      ? "💸 Вывод уже доступен"
-      : `💸 Вывод от ${withdrawMinStars} Stars`,
-  ];
-
-  return lines.join("\n");
-}
-
-export function formatStarsBalanceMessage(profile, platformSettings) {
-  const availableStars = profile.starsAvailableXtr;
-  const totalStars = profile.starsTotalXtr;
-  const lines = [
-    STARS_BALANCE_PROMPT,
-    "",
-    `Сейчас у вас: <b>${totalStars} Stars</b>`,
-    `К выводу доступно: <b>${availableStars} Stars</b>`,
-    "",
-    `Вывод открывается от <b>${platformSettings.withdrawMinStars} Stars</b>.`,
-  ];
-
-  return lines.join("\n");
-}
-
-export function formatWithdrawMessage(profile, platformSettings) {
-  const availableStars = profile.starsAvailableXtr;
-  const minStars = platformSettings.withdrawMinStars;
-  const remaining = Math.max(0, minStars - availableStars);
-
+export function formatCabinetMessage(profile, platformSettings, locale = DEFAULT_LOCALE) {
   return [
-    WITHDRAW_PROMPT,
+    getText(locale, "CABINET_PROMPT"),
     "",
-    `Доступно к выводу: <b>${availableStars} Stars</b>`,
-    `Минимум: <b>${minStars} Stars</b>`,
-    "",
-    availableStars >= minStars
-      ? "Можно отправить заявку на вывод."
-      : `До вывода осталось: <b>${remaining} Stars</b>`,
+    getText(locale, "CABINET_TRACKS", { count: profile.trackCount }),
+    getText(locale, "CABINET_BALANCE", { count: profile.starsTotalXtr }),
+    profile.starsTotalXtr >= platformSettings.withdrawMinStars
+      ? getText(locale, "CABINET_WITHDRAW_READY")
+      : getText(locale, "CABINET_WITHDRAW_MIN", { count: platformSettings.withdrawMinStars }),
   ].join("\n");
 }
 
-export function formatWithdrawRequestMessage(platformSettings) {
+export function formatStarsBalanceMessage(profile, platformSettings, locale = DEFAULT_LOCALE) {
+  return [
+    getText(locale, "STARS_BALANCE_PROMPT"),
+    "",
+    getText(locale, "BALANCE_TOTAL", { count: profile.starsTotalXtr }),
+    getText(locale, "BALANCE_AVAILABLE", { count: profile.starsAvailableXtr }),
+    "",
+    getText(locale, "BALANCE_MIN", { count: platformSettings.withdrawMinStars }),
+  ].join("\n");
+}
+
+export function formatWithdrawMessage(profile, platformSettings, locale = DEFAULT_LOCALE) {
+  const remaining = Math.max(0, platformSettings.withdrawMinStars - profile.starsAvailableXtr);
+
+  return [
+    getText(locale, "WITHDRAW_PROMPT"),
+    "",
+    getText(locale, "WITHDRAW_AVAILABLE", { count: profile.starsAvailableXtr }),
+    getText(locale, "WITHDRAW_MIN", { count: platformSettings.withdrawMinStars }),
+    "",
+    profile.starsAvailableXtr >= platformSettings.withdrawMinStars
+      ? getText(locale, "WITHDRAW_READY")
+      : getText(locale, "WITHDRAW_LEFT", { count: remaining }),
+  ].join("\n");
+}
+
+export function formatWithdrawRequestMessage(platformSettings, locale = DEFAULT_LOCALE) {
   if (platformSettings.paySupportHandle) {
     return [
-      "💸 <b>Заявка на вывод</b>",
-      `Напишите <b>${escapeHtml(platformSettings.paySupportHandle)}</b> и укажите сумму вывода.`,
+      getText(locale, "WITHDRAW_REQUEST_TITLE"),
+      getText(locale, "WITHDRAW_REQUEST_HANDLE", { handle: escapeHtml(platformSettings.paySupportHandle) }),
     ].join("\n");
   }
 
-  return "💸 <b>Заявка на вывод</b>\nНапишите в поддержку и укажите сумму вывода.";
+  return getText(locale, "WITHDRAW_REQUEST_FALLBACK");
 }
 
-export function formatStarsSupportMessage(track, platformSettings) {
+export function formatStarsSupportMessage(track, _platformSettings, locale = DEFAULT_LOCALE) {
   return [
-    "⭐ <b>Поддержать трек</b>",
+    getText(locale, "STARS_SUPPORT_TITLE"),
     `🎵 <b>${escapeHtml(track.title)}</b>`,
-    track.uploaderName ? `uploaded by ${escapeHtml(track.uploaderName)}` : null,
+    track.uploaderName ? getText(locale, "UPLOADED_BY", { name: escapeHtml(track.uploaderName) }) : null,
     "",
-    "Выберите сумму в Stars.",
-    "Поддержка зачислится на внутренний баланс владельца трека.",
+    getText(locale, "STARS_SUPPORT_BODY"),
   ].filter(Boolean).join("\n");
 }
 
-export function formatStarsPaymentSuccessMessage(payment) {
-  return [
-    "⭐ <b>Спасибо за поддержку</b>",
-    `На баланс владельца зачислено: <b>+${payment.authorShareXtr} Stars</b>`,
-  ].join("\n");
+export function formatStarsPaymentSuccessMessage(payment, locale = DEFAULT_LOCALE) {
+  return getText(locale, "STARS_PAYMENT_SUCCESS", { amount: payment.authorShareXtr });
 }
 
-export function formatPaySupportMessage(platformSettings) {
-  if (platformSettings.paySupportHandle) {
-    return `Если что-то пошло не так,\nнапишите <b>${escapeHtml(platformSettings.paySupportHandle)}</b>`;
-  }
-
-  return PAY_SUPPORT_PROMPT;
+export function formatPaySupportMessage(platformSettings, locale = DEFAULT_LOCALE) {
+  return platformSettings.paySupportHandle
+    ? getText(locale, "PAY_SUPPORT_HANDLE", { handle: escapeHtml(platformSettings.paySupportHandle) })
+    : getText(locale, "PAY_SUPPORT_PROMPT");
 }
 
-export function formatUploadTooLargeMessage(platformSettings) {
-  return [
-    "⚠️ <b>Файл слишком большой</b>",
-    `Максимум: ${platformSettings.uploadMaxMb} MB.`,
-    "Сожмите mp3 и попробуйте снова.",
-  ].join("\n");
+export function formatUploadTooLargeMessage(platformSettings, locale = DEFAULT_LOCALE) {
+  return getText(locale, "UPLOAD_TOO_LARGE", { size: platformSettings.uploadMaxMb });
 }
 
-export function formatUploadDailyLimitMessage(platformSettings) {
-  return [
-    "⚠️ <b>Лимит загрузок на сегодня исчерпан</b>",
-    `Можно загрузить до ${platformSettings.uploadDailyLimit} треков за ${formatHours(platformSettings.uploadWindowHours)}.`,
-    "Попробуйте позже.",
-  ].join("\n");
+export function formatUploadDailyLimitMessage(platformSettings, locale = DEFAULT_LOCALE) {
+  return getText(locale, "UPLOAD_DAILY_LIMIT", {
+    limit: platformSettings.uploadDailyLimit,
+    hours: formatHoursLabel(locale, platformSettings.uploadWindowHours),
+  });
 }
 
-export function formatRulesMessage(platformSettings) {
+export function formatRulesMessage(platformSettings, locale = DEFAULT_LOCALE) {
   return [
-    "📘 <b>Как работает DemoHub</b>",
+    getText(locale, "RULES_TITLE"),
     "",
-    "<b>Этапы</b>",
-    "1. Выгрузите mp3 файлом или как аудио",
-    "2. Назовите трек так, как он должен отображаться в поиске",
-    "3. Трек сразу появится в DemoHub",
-    "4. ⭐ <b>Stars</b> за поддержку будут зачисляться владельцу трека на внутренний баланс",
+    getText(locale, "RULES_STEPS"),
     "",
-    "<b>Ограничения</b>",
-    `• до ${platformSettings.uploadMaxMb} MB на файл`,
-    `• до ${platformSettings.uploadDailyLimit} загрузок за ${formatHours(platformSettings.uploadWindowHours)}`,
+    getText(locale, "RULES_LIMITS", {
+      limit: platformSettings.uploadDailyLimit,
+      hours: formatHoursLabel(locale, platformSettings.uploadWindowHours),
+      size: platformSettings.uploadMaxMb,
+    }),
     "",
-    "<b>Важно</b>",
-    "• строка uploaded by показывает, кто выгрузил трек",
-    "• треки с жалобами могут быть скрыты",
-    "• Stars зачисляются владельцу трека на внутренний баланс",
+    getText(locale, "RULES_NOTES"),
   ].join("\n");
 }
 
-export function formatCabinetTracksPreview(tracks) {
+export function formatCabinetTracksPreview(tracks, locale = DEFAULT_LOCALE) {
   if (tracks.length === 0) {
-    return CABINET_TRACKS_PREVIEW_EMPTY;
+    return "";
   }
 
-  const lines = ["🎵 <b>Последние треки</b>"];
-
+  const lines = [getText(locale, "NEWEST_TRACKS_TITLE")];
   for (const track of tracks.slice(0, 5)) {
     lines.push(`• ${track.title}`);
   }
@@ -243,39 +315,51 @@ export function formatCabinetTracksPreview(tracks) {
   return lines.join("\n");
 }
 
+export function formatLanguagePrompt(locale = DEFAULT_LOCALE) {
+  return getText(locale, "LANGUAGE_PROMPT");
+}
+
+export function formatLanguageSavedPrompt(locale = DEFAULT_LOCALE) {
+  return getText(locale, "LANGUAGE_UPDATED_PROMPT", {
+    startPrompt: getText(locale, "START_PROMPT"),
+  });
+}
+
+function trimToLength(value, maxLength) {
+  return value.length <= maxLength ? value : `${value.slice(0, maxLength - 1).trimEnd()}…`;
+}
+
 function escapeHtml(value) {
-  return value
+  return String(value)
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;");
 }
 
-function formatDays(value) {
-  return `${value} ${pluralizeRu(value, "день", "дня", "дней")}`;
-}
-
-function formatHours(value) {
-  return `${value} ${pluralizeRu(value, "час", "часа", "часов")}`;
-}
-
 function formatDuration(value) {
   const seconds = Number(value);
-
   if (!Number.isFinite(seconds) || seconds <= 0) {
     return "";
   }
 
   const minutes = Math.floor(seconds / 60);
-  const remainingSeconds = seconds % 60;
+  const rest = seconds % 60;
   const hours = Math.floor(minutes / 60);
 
   if (hours > 0) {
-    const remainingMinutes = minutes % 60;
-    return `${String(hours).padStart(2, "0")}:${String(remainingMinutes).padStart(2, "0")}:${String(remainingSeconds).padStart(2, "0")}`;
+    return `${String(hours).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}:${String(rest).padStart(2, "0")}`;
   }
 
-  return `${String(minutes).padStart(2, "0")}:${String(remainingSeconds).padStart(2, "0")}`;
+  return `${String(minutes).padStart(2, "0")}:${String(rest).padStart(2, "0")}`;
+}
+
+function formatHoursLabel(locale, hours) {
+  if ((normalizeLocale(locale) ?? DEFAULT_LOCALE) === "ru") {
+    return `${hours} ${pluralizeRu(hours, "час", "часа", "часов")}`;
+  }
+
+  return `${hours} ${getText(locale, "HOURS_LABEL")}`;
 }
 
 function pluralizeRu(value, one, few, many) {

@@ -38,6 +38,15 @@ export function createSyntheticContext(update) {
           type: "delete_message",
         });
       },
+      async copyMessage(chatId, fromChatId, messageId, options = {}) {
+        actions.push({
+          chatId,
+          fromChatId,
+          messageId,
+          options,
+          type: "copy_message",
+        });
+      },
       async sendChatAction(chatId, action) {
         actions.push({
           action,
@@ -67,6 +76,12 @@ export function createSyntheticContext(update) {
       });
     },
     async replyWithAudio(file, options = {}) {
+      if (file === "broken-file-id") {
+        const error = new Error("Call to 'sendAudio' failed! (400: Bad Request: wrong file identifier/HTTP URL specified)");
+        error.name = "GrammyError";
+        throw error;
+      }
+
       actions.push({
         file,
         options,
@@ -154,6 +169,11 @@ async function routeSyntheticUpdate(update, ctx, handlers) {
     return "command:balance";
   }
 
+  if (update.message?.text === "/language") {
+    await handlers.handleLanguageCommand(ctx);
+    return "command:language";
+  }
+
   if (update.message?.text === "/paysupport") {
     await handlers.handlePaySupport(ctx);
     return "command:paysupport";
@@ -185,11 +205,25 @@ async function routeSyntheticUpdate(update, ctx, handlers) {
   }
 
   if (typeof update.callback_query?.data === "string") {
-    const pickMatch = /^pick:(.+)$/.exec(update.callback_query.data);
+    const pickMatch = /^searchpick:(\d+)$/.exec(update.callback_query.data);
 
     if (pickMatch) {
-      await handlers.handlePickCallback(ctx, pickMatch[1]);
+      await handlers.handleSearchResultCallback(ctx, Number.parseInt(pickMatch[1], 10));
+      return "callback:searchpick";
+    }
+
+    const directPickMatch = /^pick:(.+)$/.exec(update.callback_query.data);
+
+    if (directPickMatch) {
+      await handlers.handlePickCallback(ctx, directPickMatch[1]);
       return "callback:pick";
+    }
+
+    const externalUploadMatch = /^extupload:(\d+)$/.exec(update.callback_query.data);
+
+    if (externalUploadMatch) {
+      await handlers.handleExternalUploadCallback(ctx, Number.parseInt(externalUploadMatch[1], 10));
+      return "callback:extupload";
     }
 
     const cabinetTrackMatch = /^cabtrack:(.+)$/.exec(update.callback_query.data);
@@ -197,6 +231,13 @@ async function routeSyntheticUpdate(update, ctx, handlers) {
     if (cabinetTrackMatch) {
       await handlers.handleCabinetTrackCallback(ctx, cabinetTrackMatch[1]);
       return "callback:cabtrack";
+    }
+
+    const cabinetEditMatch = /^cabedit:(.+)$/.exec(update.callback_query.data);
+
+    if (cabinetEditMatch) {
+      await handlers.handleCabinetEditTrackCallback(ctx, cabinetEditMatch[1]);
+      return "callback:cabedit";
     }
 
     const searchPageMatch = /^searchpage:(stay|\d+)$/.exec(update.callback_query.data);
@@ -209,6 +250,13 @@ async function routeSyntheticUpdate(update, ctx, handlers) {
 
       await handlers.handleSearchPageCallback(ctx, Number.parseInt(searchPageMatch[1], 10));
       return "callback:searchpage";
+    }
+
+    const languageMatch = /^lang:([a-z]{2})$/.exec(update.callback_query.data);
+
+    if (languageMatch) {
+      await handlers.handleLanguageCallback(ctx, languageMatch[1]);
+      return "callback:language";
     }
 
     const starsPayMatch = /^starspay:(.+):(\d+)$/.exec(update.callback_query.data);

@@ -3,9 +3,9 @@ import { Bot, GrammyError, HttpError } from "grammy";
 import { createHandlers, getContextMeta } from "./handlers.js";
 import { serializeError } from "./logger.js";
 
-export function createBot({ token, musicService, logger, platformSettings, replayStore }) {
+export function createBot({ token, musicService, previewSearchService, logger, platformSettings, replayStore }) {
   const bot = new Bot(token);
-  const handlers = createHandlers({ logger, musicService, platformSettings, replayStore });
+  const handlers = createHandlers({ logger, musicService, platformSettings, previewSearchService, replayStore });
 
   bot.command("start", async (ctx) => {
     await handlers.handleStart(ctx);
@@ -17,6 +17,10 @@ export function createBot({ token, musicService, logger, platformSettings, repla
 
   bot.command("balance", async (ctx) => {
     await handlers.handleBalance(ctx);
+  });
+
+  bot.command("language", async (ctx) => {
+    await handlers.handleLanguageCommand(ctx);
   });
 
   bot.command("paysupport", async (ctx) => {
@@ -43,12 +47,24 @@ export function createBot({ token, musicService, logger, platformSettings, repla
     await handlers.handleNonTextMessage(ctx);
   });
 
+  bot.callbackQuery(/^searchpick:(\d+)$/, async (ctx) => {
+    await handlers.handleSearchResultCallback(ctx, Number.parseInt(ctx.match[1], 10));
+  });
+
   bot.callbackQuery(/^pick:(.+)$/, async (ctx) => {
     await handlers.handlePickCallback(ctx, ctx.match[1]);
   });
 
+  bot.callbackQuery(/^extupload:(\d+)$/, async (ctx) => {
+    await handlers.handleExternalUploadCallback(ctx, Number.parseInt(ctx.match[1], 10));
+  });
+
   bot.callbackQuery(/^cabtrack:(.+)$/, async (ctx) => {
     await handlers.handleCabinetTrackCallback(ctx, ctx.match[1]);
+  });
+
+  bot.callbackQuery(/^cabedit:(.+)$/, async (ctx) => {
+    await handlers.handleCabinetEditTrackCallback(ctx, ctx.match[1]);
   });
 
   bot.callbackQuery(/^searchpage:(stay|\d+)$/, async (ctx) => {
@@ -58,6 +74,10 @@ export function createBot({ token, musicService, logger, platformSettings, repla
     }
 
     await handlers.handleSearchPageCallback(ctx, Number.parseInt(ctx.match[1], 10));
+  });
+
+  bot.callbackQuery(/^lang:([a-z]{2})$/, async (ctx) => {
+    await handlers.handleLanguageCallback(ctx, ctx.match[1]);
   });
 
   bot.callbackQuery(/^starspay:(.+):(\d+)$/, async (ctx) => {

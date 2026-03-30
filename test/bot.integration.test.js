@@ -29,6 +29,24 @@ test("start command replies with upload and search prompt", async () => {
   assert.equal(execution.actions[0].text, START_PROMPT);
 });
 
+test("first start asks user to choose a language", async () => {
+  const deps = createTestDeps({ autoLocale: false });
+  const execution = await dispatchSyntheticUpdate(createTextUpdate("/start", 2), deps);
+
+  assert.equal(execution.route, "command:start");
+  assert.match(execution.actions[0].text, /Выберите язык/);
+  assert.equal(execution.actions[0].options.reply_markup.inline_keyboard[0][0].callback_data, "lang:ru");
+});
+
+test("language callback saves locale and opens localized start screen", async () => {
+  const deps = createTestDeps({ autoLocale: false });
+  const execution = await dispatchSyntheticUpdate(createCallbackUpdate("lang:en"), deps);
+
+  assert.equal(execution.route, "callback:language");
+  assert.match(execution.actions[1].text, /Language saved/);
+  assert.equal(deps.state.users["20"].locale, "en");
+});
+
 test("upload prompt includes suggested title and quick-pick button", async () => {
   const deps = createTestDeps();
   const execution = await dispatchSyntheticUpdate(createAudioUploadUpdate(), deps);
@@ -131,6 +149,7 @@ test("search returns saved tracks as inline buttons", async () => {
 
   assert.deepEqual(buttons.slice(0, 1), ["My Demo"]);
   assert.ok(!buttons.includes("@tester"));
+  assert.equal(execution.actions[1].options.reply_markup.inline_keyboard[0][0].callback_data, "searchpick:0");
 });
 
 test("search does not match uploader nickname", async () => {
@@ -147,6 +166,56 @@ test("search does not match uploader nickname", async () => {
 
   assert.equal(execution.route, "message:text");
   assert.equal(execution.actions[1].text, "Ничего не нашлось.\nПопробуйте другой запрос.");
+});
+
+test("search falls back to external preview results when local catalog is empty", async () => {
+  const deps = createTestDeps({
+    previewResults: [
+      externalTrack("itunes:1", "FE!N", "Travis Scott", 191, "https://music.example/track-1"),
+    ],
+  });
+
+  const execution = await dispatchSyntheticUpdate(createTextUpdate("fein", 61), deps);
+
+  assert.equal(execution.route, "message:text");
+  assert.equal(execution.actions[1].text, SEARCH_RESULTS_PROMPT);
+  assert.match(execution.actions[1].options.reply_markup.inline_keyboard[0][0].text, /Travis Scott - FE!N/);
+  assert.equal(execution.actions[1].options.reply_markup.inline_keyboard[0][0].callback_data, "searchpick:0");
+});
+
+test("external search result opens placeholder card and upload action", async () => {
+  const deps = createTestDeps({
+    previewResults: [
+      externalTrack("itunes:1", "FE!N", "Travis Scott", 191, "https://music.example/track-1"),
+    ],
+  });
+
+  await dispatchSyntheticUpdate(createTextUpdate("fein", 62), deps);
+  const execution = await dispatchSyntheticUpdate(createSearchPickUpdate(0), deps);
+
+  assert.equal(execution.route, "callback:searchpick");
+  assert.match(execution.actions[1].text, /ещё не загружен в DemoHub/);
+  assert.match(execution.actions[1].text, /Travis Scott/);
+  assert.deepEqual(
+    execution.actions[1].options.reply_markup.inline_keyboard.map((row) => row[0].text),
+    ["↗️ Открыть на платформе", "⬆️ Загрузить этот трек в DemoHub", "← Назад"],
+  );
+});
+
+test("external upload action stores suggested title and opens upload prompt", async () => {
+  const deps = createTestDeps({
+    previewResults: [
+      externalTrack("itunes:1", "FE!N", "Travis Scott", 191, "https://music.example/track-1"),
+    ],
+  });
+
+  await dispatchSyntheticUpdate(createTextUpdate("fein", 63), deps);
+  const execution = await dispatchSyntheticUpdate(createCallbackUpdate("extupload:0"), deps);
+
+  assert.equal(execution.route, "callback:extupload");
+  assert.match(execution.actions[1].text, /Загрузите этот трек в DemoHub/);
+  assert.match(execution.actions[1].text, /Travis Scott - FE!N/);
+  assert.equal(deps.state.users["20"].pendingAction?.suggestedTitle, "Travis Scott - FE!N");
 });
 
 test("search paginates long result lists", async () => {
@@ -206,12 +275,16 @@ test("cabinet tracks renders as track buttons with back button", async () => {
   assert.equal(execution.route, "callback:cabinet");
   assert.equal(execution.actions[1].text, "🎵 <b>Мои треки</b>");
   assert.deepEqual(
-    execution.actions[1].options.reply_markup.inline_keyboard.map((row) => row[0].text),
-    ["My Demo", "Second Demo", "← Назад"],
+    execution.actions[1].options.reply_markup.inline_keyboard.map((row) => row.map((button) => button.text)),
+    [["My Demo", "✏️"], ["Second Demo", "✏️"], ["← Назад"]],
   );
   assert.equal(
     execution.actions[1].options.reply_markup.inline_keyboard[0][0].callback_data,
     "cabtrack:track-1",
+  );
+  assert.equal(
+    execution.actions[1].options.reply_markup.inline_keyboard[0][1].callback_data,
+    "cabedit:track-1",
   );
 });
 
@@ -234,6 +307,95 @@ test("cabinet track selection reposts audio without closing menu", async () => {
   );
   assert.match(execution.actions[2].options.caption, /<a href="https:\/\/t\.me\/invoice\/stars:intent-1">💫 Поддержать<\/a>/);
   assert.match(execution.actions[3].text, /Трек открыт/);
+});
+
+test("stored track prefers copying original message when source message is saved", async () => {
+  const deps = createTestDeps({
+    state: {
+      supportIntents: [],
+      supportPayments: [],
+      tracks: [track("track-1", "My Demo", "@tester", 20, 0, { sourceChatId: 10, sourceMessageId: 50 })],
+      users: {},
+    },
+  });
+
+  const execution = await dispatchSyntheticUpdate(createPickUpdate("track-1"), deps);
+
+  assert.deepEqual(
+    execution.actions.map((action) => action.type),
+    ["answer_callback_query", "create_invoice_link", "copy_message", "edit_message_text"],
+  );
+  assert.equal(execution.actions[2].chatId, 10);
+  assert.equal(execution.actions[2].fromChatId, 10);
+  assert.equal(execution.actions[2].messageId, 50);
+});
+
+test("broken stored track is deleted from catalog after telegram send failure", async () => {
+  const deps = createTestDeps({
+    state: {
+      supportIntents: [],
+      supportPayments: [],
+      tracks: [track("track-1", "Broken Demo", "@tester")],
+      users: {},
+    },
+  });
+
+  deps.musicService.lookupTrack = async () => ({
+    ...deps.state.tracks[0],
+    fileId: "broken-file-id",
+  });
+
+  const execution = await dispatchSyntheticUpdate(createCallbackUpdate("cabtrack:track-1"), deps);
+  const textAction = execution.actions.find((action) => action.text);
+
+  assert.equal(execution.route, "callback:cabtrack");
+  assert.match(textAction?.text, /удалён из DemoHub/);
+  assert.equal(deps.state.tracks.length, 0);
+});
+
+test("cabinet edit track opens rename prompt", async () => {
+  const deps = createTestDeps({
+    state: {
+      supportIntents: [],
+      supportPayments: [],
+      tracks: [track("track-1", "My Demo", "@tester")],
+      users: {},
+    },
+  });
+
+  const execution = await dispatchSyntheticUpdate(createCallbackUpdate("cabedit:track-1"), deps);
+
+  assert.equal(execution.route, "callback:cabedit");
+  assert.match(execution.actions[1].text, /Изменить название трека/);
+  assert.match(execution.actions[1].text, /My Demo/);
+  assert.equal(deps.state.users["20"].pendingAction?.trackId, "track-1");
+});
+
+test("text after cabinet edit renames track and refreshes my tracks list", async () => {
+  const deps = createTestDeps({
+    state: {
+      supportIntents: [],
+      supportPayments: [],
+      tracks: [track("track-1", "My Demo", "@tester")],
+      users: {
+        20: {
+          locale: "ru",
+          pendingAction: {
+            trackId: "track-1",
+            type: "edit_track_title",
+          },
+        },
+      },
+    },
+  });
+
+  const execution = await dispatchSyntheticUpdate(createTextUpdate("New Demo", 301), deps);
+
+  assert.equal(execution.route, "message:text");
+  assert.match(execution.actions[0].text, /Название обновлено/);
+  assert.match(execution.actions[0].text, /New Demo/);
+  assert.equal(deps.state.tracks[0].title, "New Demo");
+  assert.equal(deps.state.users["20"].pendingAction, undefined);
 });
 
 test("selection sends stored audio and exposes stars button", async () => {
@@ -372,8 +534,20 @@ test("withdraw request opens support instructions when stars threshold is reache
   assert.match(request.actions[1].text, /@demohub_support/);
 });
 
-function createTestDeps({ state = { supportIntents: [], supportPayments: [], tracks: [], users: {} } } = {}) {
+function createTestDeps({
+  autoLocale = true,
+  previewResults = [],
+  state = { supportIntents: [], supportPayments: [], tracks: [], users: {} },
+} = {}) {
   const events = [];
+  state.users ??= {};
+
+  if (autoLocale) {
+    state.users["20"] = {
+      ...(state.users["20"] ?? {}),
+      locale: state.users["20"]?.locale ?? "ru",
+    };
+  }
 
   return {
     events,
@@ -383,6 +557,11 @@ function createTestDeps({ state = { supportIntents: [], supportPayments: [], tra
       },
     },
     musicService: createMemoryCatalog(state),
+    previewSearchService: {
+      async searchTracks() {
+        return previewResults;
+      },
+    },
     platformSettings: PLATFORM_SETTINGS,
     replayStore: {
       async capture() {
@@ -483,6 +662,8 @@ function createMemoryCatalog(state) {
         fileType: pending.fileType,
         id: `track-${state.tracks.length + 1}`,
         mimeType: pending.mimeType,
+        sourceChatId: pending.sourceChatId,
+        sourceMessageId: pending.sourceMessageId,
         supportsStars: true,
         title: pending.title,
         uploaderName: pending.uploaderName,
@@ -499,6 +680,9 @@ function createMemoryCatalog(state) {
     },
     async getPendingUpload(userId) {
       return state.users[String(userId)]?.pendingUpload ?? null;
+    },
+    async getUserLocale(userId) {
+      return state.users[String(userId)]?.locale ?? null;
     },
     async getSearchSession(userId) {
       return state.users[String(userId)]?.searchSession ?? null;
@@ -535,6 +719,35 @@ function createMemoryCatalog(state) {
       state.users[String(userId)].pendingUpload.title = title;
       return state.users[String(userId)].pendingUpload;
     },
+    async updateTrackTitle(userId, trackId, title) {
+      const trackEntry = state.tracks.find((entry) => entry.id === trackId && entry.uploaderUserId === Number(userId));
+
+      if (!trackEntry) {
+        return null;
+      }
+
+      trackEntry.title = title;
+      return trackEntry;
+    },
+    async deleteTrack(trackId) {
+      const index = state.tracks.findIndex((entry) => entry.id === trackId);
+
+      if (index === -1) {
+        return null;
+      }
+
+      const [removed] = state.tracks.splice(index, 1);
+      state.supportIntents = state.supportIntents.filter((entry) => entry.trackId !== trackId);
+      state.supportPayments = state.supportPayments.filter((entry) => entry.trackId !== trackId);
+
+      for (const user of Object.values(state.users)) {
+        if (Array.isArray(user?.searchSession?.results)) {
+          user.searchSession.results = user.searchSession.results.filter((entry) => entry.trackId !== trackId);
+        }
+      }
+
+      return removed;
+    },
     async searchTracks(query, limit = 5) {
       const normalized = query.toLowerCase();
       return state.tracks.filter((trackEntry) => trackEntry.title.toLowerCase().includes(normalized)).slice(0, limit);
@@ -548,6 +761,11 @@ function createMemoryCatalog(state) {
       state.users[String(userId)] ??= {};
       state.users[String(userId)].pendingAction = action;
       return action;
+    },
+    async setUserLocale(userId, locale) {
+      state.users[String(userId)] ??= {};
+      state.users[String(userId)].locale = locale;
+      return locale;
     },
     async setUiPanel(userId, panel) {
       state.users[String(userId)] ??= {};
@@ -608,6 +826,10 @@ function createPickUpdate(trackId) {
   };
 }
 
+function createSearchPickUpdate(resultIndex) {
+  return createCallbackUpdate(`searchpick:${resultIndex}`);
+}
+
 function createCallbackUpdate(data) {
   return {
     callback_query: {
@@ -657,7 +879,7 @@ function createSuccessfulPaymentUpdate(payload, amount) {
   };
 }
 
-function track(id, title, uploaderName, uploaderUserId = 20, durationSeconds = 0) {
+function track(id, title, uploaderName, uploaderUserId = 20, durationSeconds = 0, overrides = {}) {
   return {
     createdAt: new Date().toISOString(),
     durationSeconds,
@@ -670,6 +892,19 @@ function track(id, title, uploaderName, uploaderUserId = 20, durationSeconds = 0
     uploaderName,
     uploaderUserId,
     uploaderUsername: "tester",
+    ...overrides,
+  };
+}
+
+function externalTrack(externalId, title, artist, durationSeconds = 0, externalUrl = "") {
+  return {
+    artist,
+    durationSeconds,
+    externalId,
+    externalUrl,
+    source: "Apple Music",
+    title,
+    type: "external",
   };
 }
 

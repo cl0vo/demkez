@@ -38,6 +38,8 @@ export function createCatalogService({ dbPath = DB_PATH, feeBps = 300, starsHold
             fileName: upload.fileName ?? "",
             fileType: upload.fileType,
             mimeType: upload.mimeType ?? "",
+            sourceChatId: upload.sourceChatId ?? null,
+            sourceMessageId: upload.sourceMessageId ?? null,
             suggestedTitle: upload.suggestedTitle ?? "",
             title: upload.title ?? "",
             uploaderName: upload.uploaderName,
@@ -96,6 +98,8 @@ export function createCatalogService({ dbPath = DB_PATH, feeBps = 300, starsHold
           id: randomUUID(),
           mimeType: pending.mimeType,
           searchIndex: buildSearchIndex(pending.title),
+          sourceChatId: pending.sourceChatId ?? null,
+          sourceMessageId: pending.sourceMessageId ?? null,
           title: pending.title,
           uploaderName: pending.uploaderName,
           uploaderUserId: Number(userId),
@@ -113,6 +117,11 @@ export function createCatalogService({ dbPath = DB_PATH, feeBps = 300, starsHold
     async getPendingUpload(userId) {
       const db = await readDb(dbPath);
       return db.users[String(userId)]?.pendingUpload ?? null;
+    },
+
+    async getUserLocale(userId) {
+      const db = await readDb(dbPath);
+      return db.users[String(userId)]?.locale ?? null;
     },
 
     async getRecentUploadCount(userId, windowHours = 24) {
@@ -184,6 +193,48 @@ export function createCatalogService({ dbPath = DB_PATH, feeBps = 300, starsHold
       });
     },
 
+    async updateTrackTitle(userId, trackId, title) {
+      return mutateDb(async (db) => {
+        const track = db.tracks.find((entry) => entry.id === trackId && entry.uploaderUserId === Number(userId));
+
+        if (!track) {
+          return null;
+        }
+
+        track.title = title;
+        track.searchIndex = buildSearchIndex(title);
+        track.updatedAt = new Date().toISOString();
+
+        return toTrackResult(track, db);
+      });
+    },
+
+    async deleteTrack(trackId) {
+      return mutateDb(async (db) => {
+        const index = db.tracks.findIndex((entry) => entry.id === trackId);
+
+        if (index === -1) {
+          return null;
+        }
+
+        const [deletedTrack] = db.tracks.splice(index, 1);
+        db.supportIntents = db.supportIntents.filter((entry) => entry.trackId !== trackId);
+        db.supportPayments = db.supportPayments.filter((entry) => entry.trackId !== trackId);
+
+        for (const user of Object.values(db.users)) {
+          if (Array.isArray(user?.searchSession?.results)) {
+            user.searchSession.results = user.searchSession.results.filter((entry) => entry.trackId !== trackId);
+          }
+
+          if (Array.isArray(user?.searchSession?.trackIds)) {
+            user.searchSession.trackIds = user.searchSession.trackIds.filter((entry) => entry !== trackId);
+          }
+        }
+
+        return toTrackResult(deletedTrack, db);
+      });
+    },
+
     async setSearchSession(userId, session) {
       return mutateDb(async (db) => {
         const user = ensureUserRecord(db, userId);
@@ -197,6 +248,14 @@ export function createCatalogService({ dbPath = DB_PATH, feeBps = 300, starsHold
         const user = ensureUserRecord(db, userId);
         user.pendingAction = action;
         return user.pendingAction;
+      });
+    },
+
+    async setUserLocale(userId, locale) {
+      return mutateDb(async (db) => {
+        const user = ensureUserRecord(db, userId);
+        user.locale = locale;
+        return user.locale;
       });
     },
 
@@ -478,6 +537,8 @@ function toTrackResult(track, db) {
     fileType: track.fileType,
     id: track.id,
     mimeType: track.mimeType,
+    sourceChatId: track.sourceChatId ?? null,
+    sourceMessageId: track.sourceMessageId ?? null,
     suggestedTitle: track.suggestedTitle ?? "",
     supportsStars: !uploader.moderation?.banned,
     title: track.title,

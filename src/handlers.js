@@ -1,7 +1,7 @@
 import { InlineKeyboard } from "grammy";
 
 import {
-  SEARCH_BUTTON_PROMPT,
+  DEFAULT_LOCALE,
   EMPTY_QUERY_PROMPT,
   EMPTY_RESULTS_PROMPT,
   LOOKUP_ERROR_PROMPT,
@@ -21,12 +21,20 @@ import {
   UPLOAD_MENU_PROMPT,
   UPLOAD_ONLY_MP3_PROMPT,
   UPLOAD_TITLE_PROMPT,
+  SUPPORTED_LOCALES,
   formatCabinetMessage,
+  formatExternalSearchResultCaption,
+  formatExternalSearchResultButton,
+  formatExternalUploadPrompt,
+  formatLanguagePrompt,
+  formatLanguageSavedPrompt,
   formatPaySupportMessage,
   formatRulesMessage,
   formatStarsBalanceMessage,
   formatStarsPaymentSuccessMessage,
   formatStarsSupportMessage,
+  formatTrackRenamedMessage,
+  formatTrackRenamePrompt,
   formatTrackButton,
   formatTrackCaption,
   formatUploadDailyLimitMessage,
@@ -34,27 +42,21 @@ import {
   formatUploadTitlePrompt,
   formatWithdrawMessage,
   formatWithdrawRequestMessage,
+  getText,
+  getUiLabels,
+  normalizeLocale,
   normalizeQuery,
 } from "./messages.js";
 import { noopLogger, serializeError } from "./logger.js";
 import { noopReplayStore } from "./replay-store.js";
 
-const HOME_LABEL = "🏠 Главная";
-const BACK_LABEL = "← Назад";
-const SEARCH_LABEL = "🔎 Поиск";
-const SEARCH_NEW_LABEL = "🎧 Новый поиск";
-const UPLOAD_LABEL = "⬆️ Загрузить mp3";
-const CABINET_LABEL = "👤 Кабинет";
-const TRACKS_LABEL = "🎵 Мои треки";
-const WITHDRAW_LABEL = "💸 Вывод";
-const REQUEST_WITHDRAW_LABEL = "✉️ Запросить вывод";
-const CANCEL_UPLOAD_LABEL = "✖️ Отменить";
 const HTML_MODE = "HTML";
 const SEARCH_PAGE_SIZE = 8;
 const SEARCH_RESULT_LIMIT = 96;
 
 export function createHandlers({
   musicService,
+  previewSearchService = { async searchTracks() { return []; } },
   logger = noopLogger,
   platformSettings = { feeBps: 300, feePercentLabel: "3%", starsHoldDays: 7, starsSupportAmounts: [10, 25, 50], withdrawMinStars: 100 },
   replayStore = noopReplayStore,
@@ -65,22 +67,74 @@ export function createHandlers({
 
       await resetPendingState(musicService, meta.userId);
       await logger.log("start_received", meta);
+      const locale = await getStoredLocale(musicService, meta.userId);
+
+      if (!locale) {
+        await showLanguagePicker(ctx, musicService, DEFAULT_LOCALE);
+        await logger.log("start_locale_requested", meta);
+        return;
+      }
+
       await showPanel(ctx, musicService, {
         parseMode: HTML_MODE,
-        replyMarkup: createHomeKeyboard(),
-        text: START_PROMPT,
+        replyMarkup: createHomeKeyboard(locale),
+        text: getText(locale, "START_PROMPT"),
       });
       await logger.log("start_replied", meta);
     },
 
+    async handleLanguageCommand(ctx) {
+      const meta = getContextMeta(ctx);
+      const locale = await getLocaleOrDefault(musicService, meta.userId);
+
+      await resetPendingState(musicService, meta.userId);
+      await showLanguagePicker(ctx, musicService, locale);
+    },
+
+    async handleLanguageCallback(ctx, localeCode) {
+      const meta = getContextMeta(ctx);
+      const locale = normalizeLocale(localeCode);
+
+      await ctx.answerCallbackQuery();
+
+      if (!meta.userId || !locale) {
+        await showLanguagePicker(ctx, musicService, DEFAULT_LOCALE);
+        return;
+      }
+
+      await musicService.setUserLocale(meta.userId, locale);
+      await resetPendingState(musicService, meta.userId);
+      await logger.log("language_selected", {
+        ...meta,
+        locale,
+      });
+      await showPanel(ctx, musicService, {
+        parseMode: HTML_MODE,
+        replyMarkup: createHomeKeyboard(locale),
+        text: formatLanguageSavedPrompt(locale),
+      });
+    },
+
     async handleMyTracks(ctx) {
       const meta = getContextMeta(ctx);
+      const locale = await requireLocale(ctx, musicService, meta.userId);
+
+      if (!locale) {
+        return;
+      }
+
       await resetPendingState(musicService, meta.userId);
-      await openCabinetReply(ctx, musicService, logger, platformSettings);
+      await openCabinetReply(ctx, musicService, logger, platformSettings, locale);
     },
 
     async handleBalance(ctx) {
       const meta = getContextMeta(ctx);
+      const locale = await requireLocale(ctx, musicService, meta.userId);
+
+      if (!locale) {
+        return;
+      }
+
       const profile = meta.userId ? await musicService.getUserProfile(meta.userId) : emptyProfile();
 
       await logger.log("balance_requested", {
@@ -90,33 +144,52 @@ export function createHandlers({
 
       await showPanel(ctx, musicService, {
         parseMode: HTML_MODE,
-        replyMarkup: createWithdrawKeyboard(profile, platformSettings),
-        text: formatStarsBalanceMessage(profile, platformSettings),
+        replyMarkup: createWithdrawKeyboard(profile, platformSettings, locale),
+        text: formatStarsBalanceMessage(profile, platformSettings, locale),
       });
     },
 
     async handlePaySupport(ctx) {
+      const meta = getContextMeta(ctx);
+      const locale = await requireLocale(ctx, musicService, meta.userId);
+
+      if (!locale) {
+        return;
+      }
+
       await showPanel(ctx, musicService, {
         parseMode: HTML_MODE,
-        replyMarkup: createInfoKeyboard(),
-        text: formatPaySupportMessage(platformSettings),
+        replyMarkup: createInfoKeyboard(locale),
+        text: formatPaySupportMessage(platformSettings, locale),
       });
     },
 
     async handleRules(ctx) {
+      const meta = getContextMeta(ctx);
+      const locale = await requireLocale(ctx, musicService, meta.userId);
+
+      if (!locale) {
+        return;
+      }
+
       await showPanel(ctx, musicService, {
         parseMode: HTML_MODE,
-        replyMarkup: createInfoKeyboard(),
-        text: formatRulesMessage(platformSettings),
+        replyMarkup: createInfoKeyboard(locale),
+        text: formatRulesMessage(platformSettings, locale),
       });
     },
 
     async handleTextMessage(ctx) {
       const meta = getContextMeta(ctx);
       const rawText = ctx.message?.text ?? "";
+      const locale = await requireLocale(ctx, musicService, meta.userId);
+
+      if (!locale) {
+        return;
+      }
 
       if (rawText.startsWith("/")) {
-        if (isStartCommandText(rawText) || isMyCommandText(rawText) || isBalanceCommandText(rawText) || isPaySupportCommandText(rawText) || isRulesCommandText(rawText)) {
+        if (isStartCommandText(rawText) || isMyCommandText(rawText) || isBalanceCommandText(rawText) || isLanguageCommandText(rawText) || isPaySupportCommandText(rawText) || isRulesCommandText(rawText)) {
           return;
         }
 
@@ -126,8 +199,8 @@ export function createHandlers({
         });
         await showPanel(ctx, musicService, {
           parseMode: HTML_MODE,
-          replyMarkup: createHomeKeyboard(),
-          text: START_PROMPT,
+          replyMarkup: createHomeKeyboard(locale),
+          text: getText(locale, "START_PROMPT"),
         });
         return;
       }
@@ -135,7 +208,14 @@ export function createHandlers({
       const pendingUpload = meta.userId ? await musicService.getPendingUpload(meta.userId) : null;
 
       if (pendingUpload) {
-        await handlePendingUploadText(ctx, meta, rawText, pendingUpload, musicService, logger);
+        await handlePendingUploadText(ctx, meta, rawText, pendingUpload, musicService, logger, locale);
+        return;
+      }
+
+      const pendingAction = meta.userId ? await musicService.getPendingAction(meta.userId) : null;
+
+      if (pendingAction?.type === "edit_track_title") {
+        await handleEditTrackTitleText(ctx, meta, rawText, pendingAction, musicService, logger, locale);
         return;
       }
 
@@ -145,8 +225,8 @@ export function createHandlers({
         await logger.log("empty_query_received", meta);
         await showPanel(ctx, musicService, {
           parseMode: HTML_MODE,
-          replyMarkup: createSearchPromptKeyboard(),
-          text: EMPTY_QUERY_PROMPT,
+          replyMarkup: createSearchPromptKeyboard(locale),
+          text: getText(locale, "EMPTY_QUERY_PROMPT"),
         });
         return;
       }
@@ -162,16 +242,25 @@ export function createHandlers({
         }
 
         const tracks = await musicService.searchTracks(query, SEARCH_RESULT_LIMIT);
+        let results = tracks.map((track) => toStoredSearchResult(track));
 
-        if (tracks.length === 0) {
+        if (results.length === 0) {
+          const externalResults = await previewSearchService.searchTracks(query, Math.min(SEARCH_RESULT_LIMIT, SEARCH_PAGE_SIZE * 2));
+          results = externalResults.map((track) => ({
+            ...track,
+            type: "external",
+          }));
+        }
+
+        if (results.length === 0) {
           await logger.log("search_empty", {
             ...meta,
             query,
           });
           await showPanel(ctx, musicService, {
             parseMode: HTML_MODE,
-            replyMarkup: createSearchPromptKeyboard(),
-            text: EMPTY_RESULTS_PROMPT,
+            replyMarkup: createSearchPromptKeyboard(locale),
+            text: getText(locale, "EMPTY_RESULTS_PROMPT"),
           });
           return;
         }
@@ -180,16 +269,16 @@ export function createHandlers({
           createdAt: new Date().toISOString(),
           page: 0,
           query,
-          trackIds: tracks.map((track) => track.id),
+          results,
         });
 
-        await renderSearchResultsPanel(ctx, musicService, meta.userId, 0);
+        await renderSearchResultsPanel(ctx, musicService, meta.userId, 0, locale);
 
         await logger.log("search_results_rendered", {
           ...meta,
           query,
-          resultsCount: tracks.length,
-          trackIds: tracks.map((track) => track.id),
+          resultsCount: results.length,
+          resultKinds: summarizeResultKinds(results),
         });
       } catch (error) {
         const replayPath = await replayStore.capture("search_failed", {
@@ -210,8 +299,8 @@ export function createHandlers({
 
         await showPanel(ctx, musicService, {
           parseMode: HTML_MODE,
-          replyMarkup: createSearchPromptKeyboard(),
-          text: SEARCH_ERROR_PROMPT,
+          replyMarkup: createSearchPromptKeyboard(locale),
+          text: getText(locale, "SEARCH_ERROR_PROMPT"),
         });
       }
     },
@@ -219,19 +308,27 @@ export function createHandlers({
     async handleNonTextMessage(ctx) {
       const upload = extractUploadFromMessage(ctx.message);
       const meta = getContextMeta(ctx);
+      const locale = await requireLocale(ctx, musicService, meta.userId);
+
+      if (!locale) {
+        return;
+      }
 
       if (!upload) {
         await logger.log("non_text_received", meta);
         await showPanel(ctx, musicService, {
           parseMode: HTML_MODE,
-          replyMarkup: createHomeKeyboard(),
-          text: NON_TEXT_PROMPT,
+          replyMarkup: createHomeKeyboard(locale),
+          text: getText(locale, "NON_TEXT_PROMPT"),
         });
         return;
       }
 
       const titleFromCaption = normalizeQuery(ctx.message?.caption ?? "");
-      const suggestedTitle = titleFromCaption || buildSuggestedTitle(ctx.message, upload.fileName);
+      const pendingAction = meta.userId ? await musicService.getPendingAction(meta.userId) : null;
+      const suggestedTitle = titleFromCaption
+        || pendingAction?.suggestedTitle
+        || buildSuggestedTitle(ctx.message, upload.fileName);
 
       await logger.log("upload_received", {
         ...meta,
@@ -247,8 +344,8 @@ export function createHandlers({
         });
         await showPanel(ctx, musicService, {
           parseMode: HTML_MODE,
-          replyMarkup: createUploadPromptKeyboard(),
-          text: formatUploadTooLargeMessage(platformSettings),
+          replyMarkup: createUploadPromptKeyboard(locale),
+          text: formatUploadTooLargeMessage(platformSettings, locale),
         });
         return;
       }
@@ -262,8 +359,8 @@ export function createHandlers({
         });
         await showPanel(ctx, musicService, {
           parseMode: HTML_MODE,
-          replyMarkup: createHomeKeyboard(),
-          text: formatUploadDailyLimitMessage(platformSettings),
+          replyMarkup: createHomeKeyboard(locale),
+          text: formatUploadDailyLimitMessage(platformSettings, locale),
         });
         return;
       }
@@ -290,39 +387,76 @@ export function createHandlers({
         });
         await showPanel(ctx, musicService, {
           parseMode: HTML_MODE,
-          replyMarkup: createHomeKeyboard(),
-          text: UPLOAD_DONE_PROMPT,
+          replyMarkup: createHomeKeyboard(locale),
+          text: getText(locale, "UPLOAD_DONE_PROMPT"),
         });
+        await musicService.clearPendingAction(meta.userId);
         return;
       }
 
       await showPanel(ctx, musicService, {
         parseMode: HTML_MODE,
-        replyMarkup: createUploadTitleKeyboard(suggestedTitle),
-        text: formatUploadTitlePrompt(suggestedTitle),
+        replyMarkup: createUploadTitleKeyboard(suggestedTitle, locale),
+        text: formatUploadTitlePrompt(suggestedTitle, locale),
       });
+      await musicService.clearPendingAction(meta.userId);
     },
 
-    async handlePickCallback(ctx, trackId) {
+    async handleSearchResultCallback(ctx, resultIndex) {
       const meta = getContextMeta(ctx);
+      const locale = await requireLocale(ctx, musicService, meta.userId);
+
+      if (!locale) {
+        return;
+      }
 
       await logger.log("selection_requested", {
         ...meta,
-        trackId,
+        resultIndex,
       });
 
       await ctx.answerCallbackQuery();
 
       try {
-        const track = await enrichTrack(await musicService.lookupTrack(trackId), musicService);
+        const result = await getSearchSessionResult(musicService, meta.userId, resultIndex);
+
+        if (!result) {
+          await logger.log("selection_missing", {
+            ...meta,
+            resultIndex,
+          });
+          await ctx.editMessageText(getText(locale, "LOOKUP_ERROR_PROMPT"), {
+            reply_markup: createHomeKeyboard(locale),
+          });
+          return;
+        }
+
+        if (result.type === "external") {
+          await showPanel(ctx, musicService, {
+            parseMode: HTML_MODE,
+            replyMarkup: createExternalResultKeyboard(result, resultIndex, locale),
+            text: formatExternalSearchResultCaption(result, locale),
+          });
+
+          await logger.log("selection_external_rendered", {
+            ...meta,
+            externalId: result.externalId,
+            resultIndex,
+            source: result.source,
+          });
+          return;
+        }
+
+        const track = await enrichTrack(await musicService.lookupTrack(result.trackId), musicService);
 
         if (!track) {
           await logger.log("selection_missing", {
             ...meta,
-            trackId,
+            resultIndex,
+            trackId: result.trackId,
           });
-          await ctx.editMessageText(LOOKUP_ERROR_PROMPT, {
-            reply_markup: createHomeKeyboard(),
+          await ctx.editMessageText(getText(locale, "LOOKUP_ERROR_PROMPT"), {
+            reply_markup: createHomeKeyboard(locale),
           });
           return;
         }
@@ -332,12 +466,96 @@ export function createHandlers({
           logger,
           musicService,
           platformSettings,
+          locale,
           viewerUserId: meta.userId,
         });
         await showPanel(ctx, musicService, {
           parseMode: HTML_MODE,
-          replyMarkup: createInfoKeyboard(),
-          text: TRACK_OPENED_PROMPT,
+          replyMarkup: createInfoKeyboard(locale),
+          text: getText(locale, "TRACK_OPENED_PROMPT"),
+        });
+
+        await logger.log("selection_completed", {
+          ...meta,
+          resultIndex,
+          supportsStars: Boolean(track.supportsStars),
+          trackId: track.id,
+        });
+      } catch (error) {
+        if (await cleanupBrokenTrackSend(error, track, musicService, logger, {
+          ...meta,
+          resultIndex,
+        })) {
+          await ctx.editMessageText(getText(locale, "TRACK_REMOVED_BROKEN_PROMPT"), {
+            reply_markup: createHomeKeyboard(locale),
+          });
+          return;
+        }
+
+        const replayPath = await replayStore.capture("selection_failed", {
+          context: {
+            ...meta,
+            resultIndex,
+          },
+          error,
+          update: ctx.update,
+        });
+
+        await logger.log("selection_failed", {
+          ...meta,
+          resultIndex,
+          error: serializeError(error),
+          replayPath,
+        });
+
+        await ctx.editMessageText(getText(locale, "LOOKUP_ERROR_PROMPT"), {
+          reply_markup: createHomeKeyboard(locale),
+        });
+      }
+    },
+
+    async handlePickCallback(ctx, trackId) {
+      const meta = getContextMeta(ctx);
+      const locale = await requireLocale(ctx, musicService, meta.userId);
+
+      if (!locale) {
+        return;
+      }
+
+      await logger.log("selection_requested", {
+        ...meta,
+        trackId,
+      });
+
+      await ctx.answerCallbackQuery();
+      let track = null;
+
+      try {
+        track = await enrichTrack(await musicService.lookupTrack(trackId), musicService);
+
+        if (!track) {
+          await logger.log("selection_missing", {
+            ...meta,
+            trackId,
+          });
+          await ctx.editMessageText(getText(locale, "LOOKUP_ERROR_PROMPT"), {
+            reply_markup: createHomeKeyboard(locale),
+          });
+          return;
+        }
+
+        await sendStoredTrack(ctx, track, {
+          includeFollowUp: false,
+          logger,
+          musicService,
+          platformSettings,
+          locale,
+          viewerUserId: meta.userId,
+        });
+        await showPanel(ctx, musicService, {
+          parseMode: HTML_MODE,
+          replyMarkup: createInfoKeyboard(locale),
+          text: getText(locale, "TRACK_OPENED_PROMPT"),
         });
 
         await logger.log("selection_completed", {
@@ -346,6 +564,16 @@ export function createHandlers({
           trackId,
         });
       } catch (error) {
+        if (await cleanupBrokenTrackSend(error, track, musicService, logger, {
+          ...meta,
+          trackId,
+        })) {
+          await ctx.editMessageText(getText(locale, "TRACK_REMOVED_BROKEN_PROMPT"), {
+            reply_markup: createHomeKeyboard(locale),
+          });
+          return;
+        }
+
         const replayPath = await replayStore.capture("selection_failed", {
           context: {
             ...meta,
@@ -362,14 +590,62 @@ export function createHandlers({
           replayPath,
         });
 
-        await ctx.editMessageText(LOOKUP_ERROR_PROMPT, {
-          reply_markup: createHomeKeyboard(),
+        await ctx.editMessageText(getText(locale, "LOOKUP_ERROR_PROMPT"), {
+          reply_markup: createHomeKeyboard(locale),
         });
       }
     },
 
+    async handleExternalUploadCallback(ctx, resultIndex) {
+      const meta = getContextMeta(ctx);
+      const locale = await requireLocale(ctx, musicService, meta.userId);
+
+      if (!locale) {
+        return;
+      }
+
+      const result = await getSearchSessionResult(musicService, meta.userId, resultIndex);
+
+      await ctx.answerCallbackQuery();
+
+      if (!result || result.type !== "external") {
+        await showPanel(ctx, musicService, {
+          parseMode: HTML_MODE,
+          replyMarkup: createSearchPromptKeyboard(locale),
+          text: getText(locale, "SEARCH_BUTTON_PROMPT"),
+        });
+        return;
+      }
+
+      await musicService.setPendingAction(meta.userId, {
+        createdAt: new Date().toISOString(),
+        externalId: result.externalId,
+        source: result.source,
+        suggestedTitle: buildExternalSuggestedTitle(result),
+        type: "external_upload",
+      });
+
+      await logger.log("external_upload_requested", {
+        ...meta,
+        externalId: result.externalId,
+        resultIndex,
+        source: result.source,
+      });
+
+      await showPanel(ctx, musicService, {
+        parseMode: HTML_MODE,
+        replyMarkup: createUploadPromptKeyboard(locale),
+        text: formatExternalUploadPrompt(result, locale),
+      });
+    },
+
     async handleCabinetTrackCallback(ctx, trackId) {
       const meta = getContextMeta(ctx);
+      const locale = await requireLocale(ctx, musicService, meta.userId);
+
+      if (!locale) {
+        return;
+      }
 
       await logger.log("cabinet_track_requested", {
         ...meta,
@@ -377,17 +653,18 @@ export function createHandlers({
       });
 
       await ctx.answerCallbackQuery();
+      let track = null;
 
       try {
-        const track = await enrichTrack(await musicService.lookupTrack(trackId), musicService);
+        track = await enrichTrack(await musicService.lookupTrack(trackId), musicService);
 
         if (!track) {
           await logger.log("cabinet_track_missing", {
             ...meta,
             trackId,
           });
-          await ctx.reply(LOOKUP_ERROR_PROMPT, {
-            reply_markup: createInfoKeyboard(),
+          await ctx.reply(getText(locale, "LOOKUP_ERROR_PROMPT"), {
+            reply_markup: createInfoKeyboard(locale),
           });
           return;
         }
@@ -397,12 +674,13 @@ export function createHandlers({
           logger,
           musicService,
           platformSettings,
+          locale,
           viewerUserId: meta.userId,
         });
         await showPanel(ctx, musicService, {
           parseMode: HTML_MODE,
-          replyMarkup: createInfoKeyboard(),
-          text: TRACK_OPENED_PROMPT,
+          replyMarkup: createInfoKeyboard(locale),
+          text: getText(locale, "TRACK_OPENED_PROMPT"),
         });
 
         await logger.log("cabinet_track_completed", {
@@ -410,6 +688,19 @@ export function createHandlers({
           trackId,
         });
       } catch (error) {
+        if (await cleanupBrokenTrackSend(error, track, musicService, logger, {
+          ...meta,
+          trackId,
+        })) {
+          const tracks = await musicService.listUserTracks(meta.userId, 20);
+          await showPanel(ctx, musicService, {
+            parseMode: HTML_MODE,
+            replyMarkup: createCabinetTracksKeyboard(tracks, locale),
+            text: getText(locale, "TRACK_REMOVED_BROKEN_PROMPT"),
+          });
+          return;
+        }
+
         const replayPath = await replayStore.capture("cabinet_track_failed", {
           context: {
             ...meta,
@@ -426,14 +717,59 @@ export function createHandlers({
           replayPath,
         });
 
-        await ctx.reply(LOOKUP_ERROR_PROMPT, {
-          reply_markup: createInfoKeyboard(),
+        await ctx.reply(getText(locale, "LOOKUP_ERROR_PROMPT"), {
+          reply_markup: createInfoKeyboard(locale),
         });
       }
     },
 
+    async handleCabinetEditTrackCallback(ctx, trackId) {
+      const meta = getContextMeta(ctx);
+      const locale = await requireLocale(ctx, musicService, meta.userId);
+
+      if (!locale) {
+        return;
+      }
+
+      await ctx.answerCallbackQuery();
+
+      const track = await musicService.lookupTrack(trackId);
+
+      if (!track || track.uploaderUserId !== Number(meta.userId)) {
+        await showPanel(ctx, musicService, {
+          parseMode: HTML_MODE,
+          replyMarkup: createCabinetTracksKeyboard([], locale),
+          text: getText(locale, "TRACK_RENAME_ERROR_PROMPT"),
+        });
+        return;
+      }
+
+      await musicService.setPendingAction(meta.userId, {
+        createdAt: new Date().toISOString(),
+        currentTitle: track.title,
+        trackId,
+        type: "edit_track_title",
+      });
+
+      await logger.log("cabinet_track_edit_started", {
+        ...meta,
+        trackId,
+      });
+
+      await showPanel(ctx, musicService, {
+        parseMode: HTML_MODE,
+        replyMarkup: createTrackRenameKeyboard(locale),
+        text: formatTrackRenamePrompt(track, locale),
+      });
+    },
+
     async handleUseSuggestedTitle(ctx) {
       const meta = getContextMeta(ctx);
+      const locale = await requireLocale(ctx, musicService, meta.userId);
+
+      if (!locale) {
+        return;
+      }
       const pendingUpload = meta.userId ? await musicService.getPendingUpload(meta.userId) : null;
       const suggestedTitle = pendingUpload?.suggestedTitle ?? "";
 
@@ -442,8 +778,8 @@ export function createHandlers({
       if (!pendingUpload || !suggestedTitle) {
         await showPanel(ctx, musicService, {
           parseMode: HTML_MODE,
-          replyMarkup: createUploadTitleKeyboard(""),
-          text: UPLOAD_TITLE_PROMPT,
+          replyMarkup: createUploadTitleKeyboard("", locale),
+          text: getText(locale, "UPLOAD_TITLE_PROMPT"),
         });
         return;
       }
@@ -462,37 +798,46 @@ export function createHandlers({
         trackId: track?.id ?? null,
         via: "suggestion",
       });
+      await musicService.clearPendingAction(meta.userId);
       await showPanel(ctx, musicService, {
         parseMode: HTML_MODE,
-        replyMarkup: createHomeKeyboard(),
-        text: TITLE_SUGGESTION_SAVED_PROMPT,
+        replyMarkup: createHomeKeyboard(locale),
+        text: getText(locale, "UPLOAD_DONE_PROMPT"),
       });
     },
 
     async handleSkipDonation(ctx) {
+      const meta = getContextMeta(ctx);
+      const locale = await getLocaleOrDefault(musicService, meta.userId);
       await ctx.answerCallbackQuery();
       await showPanel(ctx, musicService, {
         parseMode: HTML_MODE,
-        replyMarkup: createHomeKeyboard(),
-        text: UPLOAD_DONE_PROMPT,
+        replyMarkup: createHomeKeyboard(locale),
+        text: getText(locale, "UPLOAD_DONE_PROMPT"),
       });
     },
 
     async handleCancelUpload(ctx) {
       const meta = getContextMeta(ctx);
+      const locale = await getLocaleOrDefault(musicService, meta.userId);
 
       await ctx.answerCallbackQuery();
       await musicService.clearPendingUpload(meta.userId);
       await logger.log("upload_cancelled", meta);
       await showPanel(ctx, musicService, {
         parseMode: HTML_MODE,
-        replyMarkup: createHomeKeyboard(),
-        text: START_PROMPT,
+        replyMarkup: createHomeKeyboard(locale),
+        text: getText(locale, "START_PROMPT"),
       });
     },
 
     async handleMenuCallback(ctx, action) {
       const meta = getContextMeta(ctx);
+      const locale = await requireLocale(ctx, musicService, meta.userId);
+
+      if (!locale) {
+        return;
+      }
 
       await ctx.answerCallbackQuery();
       await resetPendingState(musicService, meta.userId);
@@ -500,8 +845,8 @@ export function createHandlers({
       if (action === "home") {
         await showPanel(ctx, musicService, {
           parseMode: HTML_MODE,
-          replyMarkup: createHomeKeyboard(),
-          text: START_PROMPT,
+          replyMarkup: createHomeKeyboard(locale),
+          text: getText(locale, "START_PROMPT"),
         });
         return;
       }
@@ -509,8 +854,8 @@ export function createHandlers({
       if (action === "search") {
         await showPanel(ctx, musicService, {
           parseMode: HTML_MODE,
-          replyMarkup: createSearchPromptKeyboard(),
-          text: SEARCH_BUTTON_PROMPT,
+          replyMarkup: createSearchPromptKeyboard(locale),
+          text: getText(locale, "SEARCH_BUTTON_PROMPT"),
         });
         return;
       }
@@ -518,30 +863,37 @@ export function createHandlers({
       if (action === "upload") {
         await showPanel(ctx, musicService, {
           parseMode: HTML_MODE,
-          replyMarkup: createUploadPromptKeyboard(),
-          text: UPLOAD_MENU_PROMPT,
+          replyMarkup: createUploadPromptKeyboard(locale),
+          text: getText(locale, "UPLOAD_MENU_PROMPT"),
         });
         return;
       }
 
       if (action === "cabinet") {
-        await openCabinetEdit(ctx, musicService, logger, platformSettings);
+        await openCabinetEdit(ctx, musicService, logger, platformSettings, locale);
       }
     },
 
     async handleCabinetCallback(ctx, action) {
       const meta = getContextMeta(ctx);
+      const locale = await requireLocale(ctx, musicService, meta.userId);
+
+      if (!locale) {
+        return;
+      }
+
       const profile = meta.userId ? await musicService.getUserProfile(meta.userId) : emptyProfile();
 
       await ctx.answerCallbackQuery();
+      await musicService.clearPendingAction(meta.userId);
 
       if (action === "tracks") {
         const tracks = await musicService.listUserTracks(meta.userId, 20);
-        const text = tracks.length === 0 ? MY_TRACKS_EMPTY_PROMPT : MY_TRACKS_TITLE;
+        const text = tracks.length === 0 ? getText(locale, "MY_TRACKS_EMPTY_PROMPT") : getText(locale, "MY_TRACKS_TITLE");
 
         await showPanel(ctx, musicService, {
           parseMode: HTML_MODE,
-          replyMarkup: createCabinetTracksKeyboard(tracks),
+          replyMarkup: createCabinetTracksKeyboard(tracks, locale),
           text,
         });
         return;
@@ -550,8 +902,8 @@ export function createHandlers({
       if (action === "withdraw") {
         await showPanel(ctx, musicService, {
           parseMode: HTML_MODE,
-          replyMarkup: createWithdrawKeyboard(profile, platformSettings),
-          text: formatWithdrawMessage(profile, platformSettings),
+          replyMarkup: createWithdrawKeyboard(profile, platformSettings, locale),
+          text: formatWithdrawMessage(profile, platformSettings, locale),
         });
         return;
       }
@@ -559,41 +911,59 @@ export function createHandlers({
 
     async handleSearchPageCallback(ctx, page) {
       const meta = getContextMeta(ctx);
+      const locale = await requireLocale(ctx, musicService, meta.userId);
+
+      if (!locale) {
+        return;
+      }
 
       await ctx.answerCallbackQuery();
 
       const session = meta.userId ? await musicService.getSearchSession(meta.userId) : null;
 
-      if (!session?.trackIds?.length) {
+      if (!session?.results?.length) {
         await showPanel(ctx, musicService, {
           parseMode: HTML_MODE,
-          replyMarkup: createSearchPromptKeyboard(),
-          text: SEARCH_BUTTON_PROMPT,
+          replyMarkup: createSearchPromptKeyboard(locale),
+          text: getText(locale, "SEARCH_BUTTON_PROMPT"),
         });
         return;
       }
 
-      await renderSearchResultsPanel(ctx, musicService, meta.userId, page);
+      await renderSearchResultsPanel(ctx, musicService, meta.userId, page, locale);
     },
 
     async handleWithdrawRequest(ctx) {
+      const meta = getContextMeta(ctx);
+      const locale = await requireLocale(ctx, musicService, meta.userId);
+
+      if (!locale) {
+        return;
+      }
+
       await ctx.answerCallbackQuery();
       await showPanel(ctx, musicService, {
         parseMode: HTML_MODE,
-        replyMarkup: createWithdrawBackKeyboard(),
-        text: formatWithdrawRequestMessage(platformSettings),
+        replyMarkup: createWithdrawBackKeyboard(locale),
+        text: formatWithdrawRequestMessage(platformSettings, locale),
       });
     },
 
     async handleDonateCallback(ctx, trackId) {
       const meta = getContextMeta(ctx);
+      const locale = await requireLocale(ctx, musicService, meta.userId);
+
+      if (!locale) {
+        return;
+      }
+
       const track = await enrichTrack(await musicService.lookupTrack(trackId), musicService);
 
       await ctx.answerCallbackQuery();
 
       if (!track?.supportsStars) {
-        await ctx.reply(STARS_SUPPORT_UNAVAILABLE_PROMPT, {
-          reply_markup: createInfoKeyboard(),
+        await ctx.reply(getText(locale, "STARS_SUPPORT_UNAVAILABLE_PROMPT"), {
+          reply_markup: createInfoKeyboard(locale),
         });
         return;
       }
@@ -604,20 +974,21 @@ export function createHandlers({
       });
       await showPanel(ctx, musicService, {
         parseMode: HTML_MODE,
-        replyMarkup: createStarsAmountKeyboard(trackId, platformSettings.starsSupportAmounts),
-        text: formatStarsSupportMessage(track, platformSettings),
+        replyMarkup: createStarsAmountKeyboard(trackId, platformSettings.starsSupportAmounts, locale),
+        text: formatStarsSupportMessage(track, platformSettings, locale),
       });
     },
 
     async handleStarsAmountCallback(ctx, trackId, amountXtr) {
       const meta = getContextMeta(ctx);
+      const locale = await getLocaleOrDefault(musicService, meta.userId);
       const track = await enrichTrack(await musicService.lookupTrack(trackId), musicService);
 
       await ctx.answerCallbackQuery();
 
       if (!track?.supportsStars) {
-        await ctx.reply(STARS_SUPPORT_UNAVAILABLE_PROMPT, {
-          reply_markup: createInfoKeyboard(),
+        await ctx.reply(getText(locale, "STARS_SUPPORT_UNAVAILABLE_PROMPT"), {
+          reply_markup: createInfoKeyboard(locale),
         });
         return;
       }
@@ -629,8 +1000,8 @@ export function createHandlers({
       });
 
       if (!intent) {
-        await ctx.reply(STARS_SUPPORT_UNAVAILABLE_PROMPT, {
-          reply_markup: createInfoKeyboard(),
+        await ctx.reply(getText(locale, "STARS_SUPPORT_UNAVAILABLE_PROMPT"), {
+          reply_markup: createInfoKeyboard(locale),
         });
         return;
       }
@@ -643,7 +1014,7 @@ export function createHandlers({
       });
 
       await ctx.replyWithInvoice(
-        TRACK_SUPPORT_INVOICE_TITLE,
+        getText(locale, "TRACK_SUPPORT_INVOICE_TITLE"),
         `${track.title} | ${track.uploaderName}`,
         intent.payload,
         "XTR",
@@ -656,6 +1027,7 @@ export function createHandlers({
 
     async handlePreCheckout(ctx) {
       const meta = getContextMeta(ctx);
+      const locale = await getLocaleOrDefault(musicService, meta.userId);
       const payload = ctx.preCheckoutQuery?.invoice_payload ?? "";
       const intent = await musicService.approveStarsSupportIntent(payload, meta.userId);
 
@@ -664,7 +1036,7 @@ export function createHandlers({
           ...meta,
           payload,
         });
-        await ctx.answerPreCheckoutQuery(false, STARS_INVOICE_EXPIRED_PROMPT);
+        await ctx.answerPreCheckoutQuery(false, getText(locale, "STARS_INVOICE_EXPIRED_PROMPT"));
         return;
       }
 
@@ -677,6 +1049,7 @@ export function createHandlers({
 
     async handleSuccessfulPayment(ctx) {
       const meta = getContextMeta(ctx);
+      const locale = await getLocaleOrDefault(musicService, meta.userId);
       const payment = ctx.message?.successful_payment;
 
       if (!payment) {
@@ -694,8 +1067,8 @@ export function createHandlers({
       if (!savedPayment) {
         await showPanel(ctx, musicService, {
           parseMode: HTML_MODE,
-          replyMarkup: createInfoKeyboard(),
-          text: STARS_INVOICE_EXPIRED_PROMPT,
+          replyMarkup: createInfoKeyboard(locale),
+          text: getText(locale, "STARS_INVOICE_EXPIRED_PROMPT"),
         });
         return;
       }
@@ -712,8 +1085,8 @@ export function createHandlers({
 
       await showPanel(ctx, musicService, {
         parseMode: HTML_MODE,
-        replyMarkup: createInfoKeyboard(),
-        text: formatStarsPaymentSuccessMessage(savedPayment),
+        replyMarkup: createInfoKeyboard(locale),
+        text: formatStarsPaymentSuccessMessage(savedPayment, locale),
       });
     },
   };
@@ -731,6 +1104,10 @@ function isBalanceCommandText(text) {
   return /^\/balance(?:@\w+)?(?:\s|$)/i.test(text);
 }
 
+function isLanguageCommandText(text) {
+  return /^\/language(?:@\w+)?(?:\s|$)/i.test(text);
+}
+
 function isPaySupportCommandText(text) {
   return /^\/paysupport(?:@\w+)?(?:\s|$)/i.test(text);
 }
@@ -739,15 +1116,15 @@ function isRulesCommandText(text) {
   return /^\/rules(?:@\w+)?(?:\s|$)/i.test(text);
 }
 
-async function handlePendingUploadText(ctx, meta, rawText, pendingUpload, musicService, logger) {
+async function handlePendingUploadText(ctx, meta, rawText, pendingUpload, musicService, logger, locale = DEFAULT_LOCALE) {
   const normalized = normalizeQuery(rawText);
 
   if (!pendingUpload.title) {
     if (!normalized) {
       await showPanel(ctx, musicService, {
         parseMode: HTML_MODE,
-        replyMarkup: createUploadTitleKeyboard(pendingUpload.suggestedTitle ?? ""),
-        text: formatUploadTitlePrompt(pendingUpload.suggestedTitle ?? ""),
+        replyMarkup: createUploadTitleKeyboard(pendingUpload.suggestedTitle ?? "", locale),
+        text: formatUploadTitlePrompt(pendingUpload.suggestedTitle ?? "", locale),
       });
       return;
     }
@@ -760,8 +1137,8 @@ async function handlePendingUploadText(ctx, meta, rawText, pendingUpload, musicS
     const track = await musicService.finalizePendingUpload(meta.userId);
 
     if (!track) {
-      await ctx.reply(UPLOAD_ONLY_MP3_PROMPT, {
-        reply_markup: createUploadPromptKeyboard(),
+      await ctx.reply(getText(locale, "UPLOAD_ONLY_MP3_PROMPT"), {
+        reply_markup: createUploadPromptKeyboard(locale),
       });
       return;
     }
@@ -770,13 +1147,83 @@ async function handlePendingUploadText(ctx, meta, rawText, pendingUpload, musicS
       ...meta,
       trackId: track.id,
     });
+    await musicService.clearPendingAction(meta.userId);
     await showPanel(ctx, musicService, {
       parseMode: HTML_MODE,
-      replyMarkup: createHomeKeyboard(),
-      text: UPLOAD_DONE_PROMPT,
+      replyMarkup: createHomeKeyboard(locale),
+      text: getText(locale, "UPLOAD_DONE_PROMPT"),
     });
     return;
   }
+}
+
+async function handleEditTrackTitleText(ctx, meta, rawText, pendingAction, musicService, logger, locale = DEFAULT_LOCALE) {
+  const normalized = normalizeQuery(rawText);
+
+  if (!normalized) {
+    const track = await musicService.lookupTrack(pendingAction.trackId);
+
+    if (!track) {
+      await musicService.clearPendingAction(meta.userId);
+      await showPanel(ctx, musicService, {
+        parseMode: HTML_MODE,
+        replyMarkup: createCabinetTracksKeyboard([], locale),
+        text: getText(locale, "TRACK_RENAME_ERROR_PROMPT"),
+      });
+      return;
+    }
+
+    await showPanel(ctx, musicService, {
+      parseMode: HTML_MODE,
+      replyMarkup: createTrackRenameKeyboard(locale),
+      text: formatTrackRenamePrompt(track, locale),
+    });
+    return;
+  }
+
+  const updatedTrack = await musicService.updateTrackTitle(meta.userId, pendingAction.trackId, normalized);
+  await musicService.clearPendingAction(meta.userId);
+
+  if (!updatedTrack) {
+    await showPanel(ctx, musicService, {
+      parseMode: HTML_MODE,
+      replyMarkup: createCabinetTracksKeyboard([], locale),
+      text: getText(locale, "TRACK_RENAME_ERROR_PROMPT"),
+    });
+    return;
+  }
+
+  await logger.log("cabinet_track_renamed", {
+    ...meta,
+    title: normalized,
+    trackId: updatedTrack.id,
+  });
+
+  const tracks = await musicService.listUserTracks(meta.userId, 20);
+  await showPanel(ctx, musicService, {
+    parseMode: HTML_MODE,
+    replyMarkup: createCabinetTracksKeyboard(tracks, locale),
+    text: formatTrackRenamedMessage(updatedTrack, locale),
+  });
+}
+
+async function cleanupBrokenTrackSend(error, track, musicService, logger, meta = {}) {
+  if (!track || !isBrokenTrackSendError(error)) {
+    return false;
+  }
+
+  await musicService.deleteTrack(track.id);
+  await logger.log("track_deleted_broken_send", {
+    ...meta,
+    error: serializeError(error),
+    trackId: track.id,
+  });
+  return true;
+}
+
+function isBrokenTrackSendError(error) {
+  const message = String(error?.description ?? error?.message ?? "");
+  return message.includes("wrong file identifier/HTTP URL specified");
 }
 
 async function resetPendingState(musicService, userId) {
@@ -786,6 +1233,37 @@ async function resetPendingState(musicService, userId) {
 
   await musicService.clearPendingAction(userId);
   await musicService.clearPendingUpload(userId);
+}
+
+async function getStoredLocale(musicService, userId) {
+  if (!userId) {
+    return null;
+  }
+
+  return normalizeLocale(await musicService.getUserLocale(userId));
+}
+
+async function getLocaleOrDefault(musicService, userId) {
+  return await getStoredLocale(musicService, userId) ?? DEFAULT_LOCALE;
+}
+
+async function requireLocale(ctx, musicService, userId) {
+  const locale = await getStoredLocale(musicService, userId);
+
+  if (locale) {
+    return locale;
+  }
+
+  await showLanguagePicker(ctx, musicService, DEFAULT_LOCALE);
+  return null;
+}
+
+async function showLanguagePicker(ctx, musicService, locale) {
+  await showPanel(ctx, musicService, {
+    parseMode: HTML_MODE,
+    replyMarkup: createLanguageKeyboard(),
+    text: formatLanguagePrompt(locale),
+  });
 }
 
 async function showPanel(ctx, musicService, { text, replyMarkup, parseMode = HTML_MODE }) {
@@ -864,6 +1342,8 @@ function extractUploadFromMessage(message) {
       durationSeconds: Number(message.audio.duration ?? 0),
       fileType: "audio",
       mimeType: message.audio.mime_type ?? "",
+      sourceChatId: message.chat?.id ?? null,
+      sourceMessageId: message.message_id ?? null,
     };
   }
 
@@ -875,6 +1355,8 @@ function extractUploadFromMessage(message) {
       durationSeconds: 0,
       fileType: "document",
       mimeType: message.document.mime_type ?? "",
+      sourceChatId: message.chat?.id ?? null,
+      sourceMessageId: message.message_id ?? null,
     };
   }
 
@@ -925,6 +1407,7 @@ async function sendStoredTrack(ctx, track, options = {}) {
   const {
     includeFollowUp = false,
     logger = noopLogger,
+    locale = DEFAULT_LOCALE,
     musicService,
     platformSettings = { feeBps: 300, feePercentLabel: "3%", starsHoldDays: 7, starsSupportAmounts: [10, 25, 50], withdrawMinStars: 100 },
     viewerUserId = null,
@@ -936,11 +1419,22 @@ async function sendStoredTrack(ctx, track, options = {}) {
     track,
     viewerUserId,
   });
-  const caption = formatTrackCaption(track, supportLink);
+  const caption = formatTrackCaption(track, supportLink, locale);
   const commonOptions = {
     caption,
     parse_mode: "HTML",
   };
+
+  const targetChatId = getContextMeta(ctx).chatId;
+
+  if (targetChatId && track.sourceChatId && track.sourceMessageId) {
+    try {
+      await ctx.api.copyMessage(targetChatId, track.sourceChatId, track.sourceMessageId, commonOptions);
+      return;
+    } catch {
+      // Fall back to file_id for legacy or unavailable source messages.
+    }
+  }
 
   if (track.fileType === "document") {
     await ctx.replyWithDocument(track.fileId, commonOptions);
@@ -951,13 +1445,13 @@ async function sendStoredTrack(ctx, track, options = {}) {
   if (includeFollowUp) {
     await showPanel(ctx, musicService, {
       parseMode: HTML_MODE,
-      replyMarkup: createInfoKeyboard(),
-      text: SENT_TRACK_PROMPT,
+      replyMarkup: createInfoKeyboard(locale),
+      text: getText(locale, "SENT_TRACK_PROMPT"),
     });
   }
 }
 
-async function openCabinetReply(ctx, musicService, logger, platformSettings) {
+async function openCabinetReply(ctx, musicService, logger, platformSettings, locale = DEFAULT_LOCALE) {
   const meta = getContextMeta(ctx);
   const profile = meta.userId ? await musicService.getUserProfile(meta.userId) : emptyProfile();
 
@@ -969,12 +1463,12 @@ async function openCabinetReply(ctx, musicService, logger, platformSettings) {
 
   await showPanel(ctx, musicService, {
     parseMode: HTML_MODE,
-    replyMarkup: createCabinetKeyboard(),
-    text: formatCabinetMessage(profile, platformSettings),
+    replyMarkup: createCabinetKeyboard(locale),
+    text: formatCabinetMessage(profile, platformSettings, locale),
   });
 }
 
-async function openCabinetEdit(ctx, musicService, logger, platformSettings) {
+async function openCabinetEdit(ctx, musicService, logger, platformSettings, locale = DEFAULT_LOCALE) {
   const meta = getContextMeta(ctx);
   const profile = meta.userId ? await musicService.getUserProfile(meta.userId) : emptyProfile();
 
@@ -986,54 +1480,58 @@ async function openCabinetEdit(ctx, musicService, logger, platformSettings) {
 
   await showPanel(ctx, musicService, {
     parseMode: HTML_MODE,
-    replyMarkup: createCabinetKeyboard(),
-    text: formatCabinetMessage(profile, platformSettings),
+    replyMarkup: createCabinetKeyboard(locale),
+    text: formatCabinetMessage(profile, platformSettings, locale),
   });
 }
 
-function createHomeKeyboard() {
+function createHomeKeyboard(locale = DEFAULT_LOCALE) {
+  const labels = getUiLabels(locale);
   return new InlineKeyboard()
-    .text(SEARCH_LABEL, "menu:search")
+    .text(labels.search, "menu:search")
     .row()
-    .text(UPLOAD_LABEL, "menu:upload")
+    .text(labels.upload, "menu:upload")
     .row()
-    .text(CABINET_LABEL, "menu:cabinet");
+    .text(labels.cabinet, "menu:cabinet");
 }
 
-function createSearchPromptKeyboard() {
+function createSearchPromptKeyboard(locale = DEFAULT_LOCALE) {
+  const labels = getUiLabels(locale);
   return new InlineKeyboard()
-    .text(BACK_LABEL, "menu:home");
+    .text(labels.back, "menu:home");
 }
 
-function createUploadPromptKeyboard() {
+function createUploadPromptKeyboard(locale = DEFAULT_LOCALE) {
+  const labels = getUiLabels(locale);
   return new InlineKeyboard()
-    .text(HOME_LABEL, "menu:home");
+    .text(labels.home, "menu:home");
 }
 
-function createUploadTitleKeyboard(suggestedTitle) {
+function createUploadTitleKeyboard(suggestedTitle, locale = DEFAULT_LOCALE) {
+  const labels = getUiLabels(locale);
   const keyboard = new InlineKeyboard();
 
   if (suggestedTitle) {
-    keyboard.text(`Оставить: ${shortenLabel(suggestedTitle, 24)}`, "upload:title:use").row();
+    keyboard.text(getText(locale, "KEEP_SUGGESTED_LABEL", { title: shortenLabel(suggestedTitle, 24) }), "upload:title:use").row();
   }
 
-  keyboard.text(CANCEL_UPLOAD_LABEL, "upload:cancel");
+  keyboard.text(labels.cancelUpload, "upload:cancel");
 
   return keyboard;
 }
 
-function createSearchResultsKeyboard(tracks) {
-  return createSearchResultsKeyboardPage(tracks, {
+function createSearchResultsKeyboard(results) {
+  return createSearchResultsKeyboardPage(results, {
     page: 0,
     totalPages: 1,
   });
 }
 
-function createSearchResultsKeyboardPage(tracks, pagination) {
+function createSearchResultsKeyboardPage(results, pagination) {
   const keyboard = new InlineKeyboard();
 
-  for (const track of tracks) {
-    keyboard.text(formatTrackButton(track), `pick:${track.id}`).row();
+  for (const result of results) {
+    keyboard.text(formatSearchResultButton(result), `searchpick:${result.sessionIndex}`).row();
   }
 
   if (pagination.totalPages > 1) {
@@ -1071,7 +1569,8 @@ async function createTrackAudioSupportLink(ctx, { logger, musicService, platform
       return undefined;
     }
 
-    const invoiceLink = await createStarsInvoiceLink(ctx, track, intent);
+    const locale = await getLocaleOrDefault(musicService, viewerUserId);
+    const invoiceLink = await createStarsInvoiceLink(ctx, track, intent, locale);
 
     await logger.log("stars_invoice_link_created", {
       ...getContextMeta(ctx),
@@ -1092,89 +1591,144 @@ async function createTrackAudioSupportLink(ctx, { logger, musicService, platform
   }
 }
 
-async function createStarsInvoiceLink(ctx, track, intent) {
+async function createStarsInvoiceLink(ctx, track, intent, locale = DEFAULT_LOCALE) {
   return ctx.api.raw.createInvoiceLink({
     currency: "XTR",
     description: `${track.title} | ${track.uploaderName}`,
     payload: intent.payload,
     prices: [{ amount: intent.amountXtr, label: `${intent.amountXtr} XTR` }],
-    title: TRACK_SUPPORT_INVOICE_TITLE,
+    title: getText(locale, "TRACK_SUPPORT_INVOICE_TITLE"),
   });
 }
 
-function createCabinetKeyboard() {
+function createCabinetKeyboard(locale = DEFAULT_LOCALE) {
+  const labels = getUiLabels(locale);
   return new InlineKeyboard()
-    .text(TRACKS_LABEL, "cab:tracks")
+    .text(labels.tracks, "cab:tracks")
     .row()
-    .text(WITHDRAW_LABEL, "cab:withdraw")
+    .text(labels.withdraw, "cab:withdraw")
     .row()
-    .text(BACK_LABEL, "menu:home");
+    .text(labels.back, "menu:home");
 }
 
-function createCabinetTracksKeyboard(tracks) {
+function createCabinetTracksKeyboard(tracks, locale = DEFAULT_LOCALE) {
+  const labels = getUiLabels(locale);
   const keyboard = new InlineKeyboard();
 
   for (const track of tracks) {
-    keyboard.text(formatTrackButton(track), `cabtrack:${track.id}`).row();
+    keyboard
+      .text(formatTrackButton(track), `cabtrack:${track.id}`)
+      .text(getText(locale, "EDIT_TRACK_LABEL"), `cabedit:${track.id}`)
+      .row();
   }
 
-  keyboard.text(BACK_LABEL, "menu:cabinet");
+  keyboard.text(labels.back, "menu:cabinet");
 
   return keyboard;
 }
 
-function createWithdrawKeyboard(profile, platformSettings) {
+function createTrackRenameKeyboard(locale = DEFAULT_LOCALE) {
+  const labels = getUiLabels(locale);
+  return new InlineKeyboard()
+    .text(labels.back, "cab:tracks");
+}
+
+function createWithdrawKeyboard(profile, platformSettings, locale = DEFAULT_LOCALE) {
+  const labels = getUiLabels(locale);
   const keyboard = new InlineKeyboard();
 
   if (profile.starsAvailableXtr >= platformSettings.withdrawMinStars) {
-    keyboard.text(REQUEST_WITHDRAW_LABEL, "withdraw:request").row();
+    keyboard.text(labels.requestWithdraw, "withdraw:request").row();
   }
 
-  keyboard.text(BACK_LABEL, "menu:cabinet");
+  keyboard.text(labels.back, "menu:cabinet");
 
   return keyboard;
 }
 
-function createWithdrawBackKeyboard() {
+function createWithdrawBackKeyboard(locale = DEFAULT_LOCALE) {
+  const labels = getUiLabels(locale);
   return new InlineKeyboard()
-    .text(BACK_LABEL, "menu:cabinet");
+    .text(labels.back, "menu:cabinet");
 }
 
-function createStarsAmountKeyboard(trackId, amounts) {
+function createStarsAmountKeyboard(trackId, amounts, locale = DEFAULT_LOCALE) {
+  const labels = getUiLabels(locale);
   const keyboard = new InlineKeyboard();
 
   for (const amount of amounts) {
     keyboard.text(`${amount} XTR`, `starspay:${trackId}:${amount}`).row();
   }
 
-  keyboard.text(BACK_LABEL, `pick:${trackId}`);
+  keyboard.text(labels.back, `pick:${trackId}`);
 
   return keyboard;
 }
 
-function createInfoKeyboard() {
+function createInfoKeyboard(locale = DEFAULT_LOCALE) {
+  const labels = getUiLabels(locale);
   return new InlineKeyboard()
-    .text(SEARCH_NEW_LABEL, "menu:search")
+    .text(labels.searchNew, "menu:search")
     .row()
-    .text(CABINET_LABEL, "menu:cabinet");
+    .text(labels.cabinet, "menu:cabinet");
 }
 
-async function renderSearchResultsPanel(ctx, musicService, userId, requestedPage) {
+function createExternalResultKeyboard(result, resultIndex, locale = DEFAULT_LOCALE) {
+  const labels = getUiLabels(locale);
+  const keyboard = new InlineKeyboard();
+
+  if (result.externalUrl) {
+    keyboard.url(getText(locale, "OPEN_ON_PLATFORM_LABEL"), result.externalUrl).row();
+  }
+
+  keyboard
+    .text(getText(locale, "UPLOAD_EXTERNAL_TRACK_LABEL"), `extupload:${resultIndex}`)
+    .row()
+    .text(labels.back, "menu:search");
+
+  return keyboard;
+}
+
+function createLanguageKeyboard() {
+  const keyboard = new InlineKeyboard();
+
+  for (let index = 0; index < SUPPORTED_LOCALES.length; index += 2) {
+    const row = SUPPORTED_LOCALES.slice(index, index + 2);
+
+    keyboard.text(`${row[0].flag} ${row[0].name}`, `lang:${row[0].code}`);
+
+    if (row[1]) {
+      keyboard.text(`${row[1].flag} ${row[1].name}`, `lang:${row[1].code}`);
+    }
+
+    if (index + 2 < SUPPORTED_LOCALES.length) {
+      keyboard.row();
+    }
+  }
+
+  return keyboard;
+}
+
+async function renderSearchResultsPanel(ctx, musicService, userId, requestedPage, locale = DEFAULT_LOCALE) {
   const session = userId ? await musicService.getSearchSession(userId) : null;
 
-  if (!session?.trackIds?.length) {
+  if (!session?.results?.length) {
     await showPanel(ctx, musicService, {
       parseMode: HTML_MODE,
-      replyMarkup: createSearchPromptKeyboard(),
-      text: SEARCH_BUTTON_PROMPT,
+      replyMarkup: createSearchPromptKeyboard(locale),
+      text: getText(locale, "SEARCH_BUTTON_PROMPT"),
     });
     return;
   }
 
-  const totalPages = Math.max(1, Math.ceil(session.trackIds.length / SEARCH_PAGE_SIZE));
+  const totalPages = Math.max(1, Math.ceil(session.results.length / SEARCH_PAGE_SIZE));
   const safePage = Math.max(0, Math.min(requestedPage, totalPages - 1));
-  const pageTrackIds = session.trackIds.slice(safePage * SEARCH_PAGE_SIZE, (safePage + 1) * SEARCH_PAGE_SIZE);
-  const tracks = (await Promise.all(pageTrackIds.map((trackId) => musicService.lookupTrack(trackId))))
+  const pageResults = session.results
+    .slice(safePage * SEARCH_PAGE_SIZE, (safePage + 1) * SEARCH_PAGE_SIZE)
+    .map((result, index) => ({
+      ...result,
+      sessionIndex: safePage * SEARCH_PAGE_SIZE + index,
+    }))
     .filter(Boolean);
 
   await musicService.setSearchSession(userId, {
@@ -1184,12 +1738,45 @@ async function renderSearchResultsPanel(ctx, musicService, userId, requestedPage
 
   await showPanel(ctx, musicService, {
     parseMode: HTML_MODE,
-    replyMarkup: createSearchResultsKeyboardPage(tracks, {
+    replyMarkup: createSearchResultsKeyboardPage(pageResults, {
       page: safePage,
       totalPages,
     }),
-    text: SEARCH_RESULTS_PROMPT,
+    text: getText(locale, "SEARCH_RESULTS_PROMPT"),
   });
+}
+
+function formatSearchResultButton(result) {
+  if (result.type === "external") {
+    return formatExternalSearchResultButton(result);
+  }
+
+  return formatTrackButton(result);
+}
+
+function toStoredSearchResult(track) {
+  return {
+    durationSeconds: track.durationSeconds,
+    title: track.title,
+    trackId: track.id,
+    type: "local",
+  };
+}
+
+function summarizeResultKinds(results) {
+  return results.reduce((summary, result) => {
+    summary[result.type] = (summary[result.type] ?? 0) + 1;
+    return summary;
+  }, {});
+}
+
+async function getSearchSessionResult(musicService, userId, resultIndex) {
+  const session = userId ? await musicService.getSearchSession(userId) : null;
+  return session?.results?.[resultIndex] ?? null;
+}
+
+function buildExternalSuggestedTitle(result) {
+  return [result.artist, result.title].filter(Boolean).join(" - ") || result.title || "";
 }
 
 function shortenLabel(value, maxLength) {
