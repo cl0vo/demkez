@@ -13,14 +13,7 @@ export async function startBotRuntime({
 } = {}) {
   installProcessHandlers({ bot, logger, processRef });
   await logger.log("bot_starting", { mode: "polling" });
-
-  try {
-    await syncBotCommands(bot, logger, platformSettings);
-  } catch (error) {
-    await logger.log("bot_command_sync_failed", {
-      error: serializeError(error),
-    });
-  }
+  void syncBotCommandsInBackground(bot, logger, platformSettings);
 
   await logger.log("bot_polling_started", { mode: "polling" });
   await bot.start({
@@ -114,6 +107,16 @@ export function installProcessHandlers({ bot, logger, processRef = process } = {
 
 export function isMainModule(metaUrl, argv = process.argv) {
   return Boolean(argv?.[1]) && metaUrl === pathToFileURL(argv[1]).href;
+}
+
+async function syncBotCommandsInBackground(bot, logger, platformSettings) {
+  try {
+    await syncBotCommands(bot, logger, platformSettings);
+  } catch (error) {
+    await logger.log("bot_command_sync_failed", {
+      error: serializeError(error),
+    });
+  }
 }
 
 async function retryAsync(task, { attempts, delayMs, onRetry }) {

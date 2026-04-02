@@ -93,3 +93,48 @@ test("startBotRuntime keeps polling alive when command sync fails", async () => 
     ["unhandledRejection", "uncaughtException", "SIGINT", "SIGTERM"],
   );
 });
+
+test("startBotRuntime does not block polling on a hanging command sync", async () => {
+  const events = [];
+  let startedWith = null;
+
+  const bot = {
+    api: {
+      async setMyCommands() {
+        return new Promise(() => {});
+      },
+    },
+    async start(options) {
+      startedWith = options;
+    },
+    async stop() {},
+  };
+  const processRef = {
+    exitCode: 0,
+    on() {
+      return this;
+    },
+    once() {
+      return this;
+    },
+  };
+
+  await startBotRuntime({
+    bot,
+    logger: {
+      async log(event, payload = {}) {
+        events.push({ event, payload });
+      },
+    },
+    platformSettings: {
+      commandSyncRetryCount: 1,
+      commandSyncRetryDelayMs: 0,
+    },
+    processRef,
+  });
+
+  assert.deepEqual(startedWith, {
+    allowed_updates: BOT_ALLOWED_UPDATES,
+  });
+  assert.ok(events.some((entry) => entry.event === "bot_polling_started"));
+});
